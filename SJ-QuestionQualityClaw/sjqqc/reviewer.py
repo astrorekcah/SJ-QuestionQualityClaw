@@ -1,183 +1,197 @@
-"""Question quality review engine — production-grade, multi-mode LLM analysis.
+"""Feedback-driven question review engine.
 
-Modes:
-  - single:      One-shot rubric evaluation
-  - multi_pass:  N independent reviews → consensus Feedback with dispute detection
-  - comparative: Diff a revised question against its original
-  - batch:       Review a set of questions → aggregate BatchReport
-  - revise:      Auto-generate an improved version of a question
+Primary workflow:
+  1. validate_feedback()  — Is the human comment technically correct?
+  2. improve_question()   — Apply validated feedback to produce a revised question
+  3. quality_check()      — Independent quality assessment (secondary mode)
+
+Handles all platform question types: mc-block, mc-code, mc-line.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-from collections import Counter
 from typing import Any
 
 import httpx
 from loguru import logger
 
-from config.review_criteria import DEFAULT_RUBRIC, ReviewRubric
 from sjqqc.models import (
-    BatchReport,
-    BatchReportEntry,
-    Choice,
-    ComparisonResult,
-    CriterionDelta,
-    CriterionScore,
-    Feedback,
-    Question,
-    Review,
-    ReviewVerdict,
+    AssessmentQuestion,
+    FeedbackComment,
+    FeedbackValidation,
+    FeedbackVerdict,
+    QuestionRevision,
 )
 
 # ---------------------------------------------------------------------------
-# Prompt templates
+# System prompts
 # ---------------------------------------------------------------------------
 
-REVIEW_SYSTEM_PROMPT = """\
-You are QuestionQualityClaw, an expert assessment question quality reviewer.
-You analyze questions for clarity, correctness, distractor quality, difficulty alignment,
-coverage, fairness, and actionability.
+VALIDATE_FEEDBACK_SYSTEM = """\
+You are QuestionQualityClaw, a technical reviewer for secure-coding assessment questions.
+You receive a question (with code and choices) and a human feedback comment.
+Your job: determine whether the feedback is TECHNICALLY CORRECT.
 
-You MUST respond with valid JSON matching this exact schema:
+Analyze the code carefully. Consider the programming language, security context, and
+whether the feedback identifies a real issue with the question, its answer, or its choices.
+
+You MUST respond with valid JSON:
 {
-  "criterion_scores": [
-    {"criterion": "<name>", "score": <0-10>, "feedback": "<specific feedback>"}
-  ],
-  "summary": "<2-3 sentence overall assessment>",
-  "suggestions": ["<actionable suggestion 1>", ...],
-  "revised_body": "<improved question text or null>",
-  "revised_choices": [
-    {"label": "A", "text": "...", "is_correct": false, "explanation": "..."}
-  ] or null
+  "verdict": "valid" | "partially_valid" | "invalid" | "unclear",
+  "confidence": 0.0-1.0,
+  "reasoning": "<detailed technical analysis explaining your assessment>",
+  "affected_areas": ["stem", "code", "choices", "answer", "scenario"],
+  "requires_human_review": true/false,
+  "suggested_action": "update_answer" | "revise_stem" | "revise_choices" | \
+"revise_code" | "add_explanation" | "no_action" | "needs_discussion"
 }
 """
 
-COMPARATIVE_SYSTEM_PROMPT = """\
-You are QuestionQualityClaw comparing a REVISED question against its ORIGINAL version.
-Determine whether the revision addressed the previous feedback and improved quality.
+IMPROVE_QUESTION_SYSTEM = """\
+You are QuestionQualityClaw. Given an assessment question and validated feedback,
+produce an improved version that addresses the feedback.
 
-You MUST respond with valid JSON matching this exact schema:
+CRITICAL: The output must be re-uploadable to the platform without modification.
+You must return the COMPLETE question in the EXACT platform JSON schema.
+
+Rules:
+- Return the full question object with path, title, parameters, prompt, and answers
+- The prompt.typeId MUST stay the same
+- The prompt.configuration.choices MUST keep the exact same structure per typeId:
+  - mc-block: each choice has {"key": "x", "start": N, "end": N}
+  - mc-code: each choice has {"key": "x", "code": ["line1", ...]}
+  - mc-line: each choice has {"key": "x", "choice": N}
+- Keep the same number of choices with the same keys (a, b, c, d)
+- The answers array format: [{"value": "<key>"}]
+- If codeLine exists in the original, preserve it
+- Do NOT add any extra fields the platform doesn't expect
+- Do NOT change the path or parameters
+
+You MUST respond with valid JSON:
 {
-  "improvements": ["<what got better>", ...],
-  "regressions": ["<what got worse>", ...],
-  "unresolved_issues": ["<original feedback not addressed>", ...],
-  "revision_adequate": true/false,
-  "notes": "<brief overall assessment of the revision>"
-}
-"""
-
-REVISION_SYSTEM_PROMPT = """\
-You are QuestionQualityClaw. Given a question and its review feedback, generate an
-improved version that addresses the feedback while preserving the author's intent and
-domain-specific terminology.
-
-You MUST respond with valid JSON matching this exact schema:
-{
-  "revised_title": "<improved title>",
-  "revised_body": "<improved question stem>",
-  "revised_choices": [
-    {"label": "A", "text": "...", "is_correct": true/false, "explanation": "..."}
-  ] or null,
-  "revised_correct_answer": "<for non-MCQ types>" or null,
-  "changes_made": ["<description of each change>", ...],
+  "revised_question": { <full platform question JSON> },
+  "changes_made": ["<description of change 1>", ...],
   "rationale": "<why these changes address the feedback>"
 }
 """
 
+QUALITY_CHECK_SYSTEM = """\
+You are QuestionQualityClaw performing an independent quality check on a
+secure-coding assessment question. Evaluate the question on these dimensions:
 
-def _build_review_prompt(question: Question, rubric: ReviewRubric) -> str:
-    """Build the user prompt for reviewing a question."""
-    q_data = {
-        "title": question.title,
-        "body": question.body,
-        "type": question.question_type.value,
-        "difficulty": question.difficulty.value,
-        "domain": question.domain,
-        "tags": question.tags,
-    }
-    if question.choices:
-        q_data["choices"] = [
-            {
-                "label": c.label,
-                "text": c.text,
-                "is_correct": c.is_correct,
-                "explanation": c.explanation,
-            }
-            for c in question.choices
-        ]
-    if question.correct_answer:
-        q_data["correct_answer"] = question.correct_answer
-    if question.reference_material:
-        q_data["reference_material"] = question.reference_material
+1. **Technical accuracy**: Is the marked answer correct? Is the code realistic?
+2. **Stem clarity**: Is the scenario clear and unambiguous?
+3. **Choice quality**: Are wrong choices plausible? Is there exactly one correct answer?
+4. **Code quality**: Is the code syntactically valid and realistic for the language?
+5. **Difficulty calibration**: Does it test what it claims to test?
 
-    return (
-        "Review the following assessment question using the rubric below.\n\n"
-        f"## Question\n```json\n{json.dumps(q_data, indent=2)}\n```\n\n"
-        f"## Rubric\n{rubric.to_prompt_section()}\n\n"
-        "Respond with the JSON schema specified in your instructions. "
-        "Be specific and actionable."
-    )
+You MUST respond with valid JSON:
+{
+  "overall_score": 0-10,
+  "technical_accuracy": {"score": 0-10, "notes": "..."},
+  "stem_clarity": {"score": 0-10, "notes": "..."},
+  "choice_quality": {"score": 0-10, "notes": "..."},
+  "code_quality": {"score": 0-10, "notes": "..."},
+  "difficulty_calibration": {"score": 0-10, "notes": "..."},
+  "issues_found": ["<issue 1>", ...],
+  "verdict": "pass" | "needs_revision" | "fail"
+}
+"""
 
 
-def _build_comparative_prompt(
-    original: Question,
-    revised: Question,
-    original_review: Review,
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+def _format_question_for_llm(q: AssessmentQuestion) -> str:
+    """Render a question into a text block the LLM can analyze."""
+    lines = [
+        f"## Question: {q.title}",
+        f"**Type**: {q.prompt.typeId}",
+        f"**Language**: {q.language}",
+        f"**Path**: {q.path}",
+        "",
+        "### Stem",
+        q.stem,
+        "",
+        "### Code",
+    ]
+
+    for i, code_line in enumerate(q.prompt.configuration.code):
+        lines.append(f"{i:>4}| {code_line}")
+
+    lines.append("")
+    lines.append("### Choices")
+    for key in q.choice_keys():
+        lines.append(f"**{key.upper()}**: {q.describe_choice(key)}")
+        lines.append("")
+
+    lines.append(f"### Correct Answer: {q.correct_answer_key}")
+    return "\n".join(lines)
+
+
+def _build_validate_prompt(
+    q: AssessmentQuestion,
+    feedback: FeedbackComment,
 ) -> str:
-    """Build the prompt comparing original and revised question versions."""
     return (
-        "## Original Question\n"
-        f"**Title**: {original.title}\n"
-        f"**Body**: {original.body}\n"
-        f"**Choices**: {json.dumps([c.model_dump() for c in original.choices], indent=2) if original.choices else 'N/A'}\n\n"  # noqa: E501
-        "## Original Review Feedback\n"
-        f"**Score**: {original_review.overall_score}/10\n"
-        f"**Verdict**: {original_review.verdict}\n"
-        f"**Suggestions**: {json.dumps(original_review.suggestions)}\n\n"
-        "## Revised Question\n"
-        f"**Title**: {revised.title}\n"
-        f"**Body**: {revised.body}\n"
-        f"**Choices**: {json.dumps([c.model_dump() for c in revised.choices], indent=2) if revised.choices else 'N/A'}\n\n"  # noqa: E501
-        "Analyze whether the revision adequately addressed the feedback."
+        f"{_format_question_for_llm(q)}\n\n"
+        "---\n\n"
+        "## Feedback to Validate\n"
+        f"**Author**: {feedback.author}\n"
+        f"**Comment**: {feedback.comment}\n"
+        + (
+            f"**Target choice**: {feedback.target_choice}\n"
+            if feedback.target_choice else ""
+        )
+        + (
+            f"**Target lines**: {feedback.target_lines}\n"
+            if feedback.target_lines else ""
+        )
+        + "\nIs this feedback technically correct? Analyze carefully."
     )
 
 
-def _build_revision_prompt(question: Question, review: Review) -> str:
-    """Build the prompt for auto-generating an improved question."""
-    criterion_lines = "\n".join(
-        f"- **{cs.criterion}** ({cs.score}/10): {cs.feedback}"
-        for cs in review.criterion_scores
-    )
-    suggestion_lines = "\n".join(f"- {s}" for s in review.suggestions)
-
+def _build_improve_prompt(
+    q: AssessmentQuestion,
+    feedback: FeedbackComment,
+    validation: FeedbackValidation,
+) -> str:
+    # Include the raw platform JSON so the LLM sees the exact format to preserve
+    platform_json = json.dumps(q.to_platform_json(), indent=2)
     return (
-        "## Question to Improve\n"
-        f"**Title**: {question.title}\n"
-        f"**Body**: {question.body}\n"
-        f"**Type**: {question.question_type.value}\n"
-        f"**Difficulty**: {question.difficulty.value}\n"
-        f"**Domain**: {question.domain}\n"
-        f"**Choices**: {json.dumps([c.model_dump() for c in question.choices], indent=2) if question.choices else 'N/A'}\n\n"  # noqa: E501
-        "## Review Feedback to Address\n"
-        f"**Score**: {review.overall_score}/10 — **{review.verdict}**\n"
-        f"**Summary**: {review.summary}\n"
-        f"**Suggestions**:\n{suggestion_lines}\n\n"
-        f"## Criterion Scores\n{criterion_lines}\n\n"
-        "Generate an improved version that addresses ALL suggestions. "
-        "Preserve the author's intent and domain terminology."
+        f"## Original Question (exact platform format — preserve this structure)\n"
+        f"```json\n{platform_json}\n```\n\n"
+        f"## Human-Readable View\n"
+        f"{_format_question_for_llm(q)}\n\n"
+        "---\n\n"
+        "## Validated Feedback\n"
+        f"**Comment**: {feedback.comment}\n"
+        f"**Verdict**: {validation.verdict}\n"
+        f"**Reasoning**: {validation.reasoning}\n"
+        f"**Suggested action**: {validation.suggested_action}\n"
+        f"**Affected areas**: {', '.join(validation.affected_areas)}\n\n"
+        "Return the COMPLETE revised question in the `revised_question` field "
+        "using the EXACT same JSON structure shown above. "
+        "The output must be directly uploadable to the platform."
+    )
+
+
+def _build_quality_check_prompt(q: AssessmentQuestion) -> str:
+    return (
+        f"{_format_question_for_llm(q)}\n\n"
+        "Perform a thorough quality check. Be specific about any issues found."
     )
 
 
 # ---------------------------------------------------------------------------
-# LLM Client (shared across all modes)
+# LLM Client
 # ---------------------------------------------------------------------------
 
 class _LLMClient:
-    """Thin async wrapper around an OpenRouter-compatible chat API."""
+    """Async wrapper around an OpenRouter-compatible chat API."""
 
     def __init__(self, api_key: str, model: str, base_url: str) -> None:
         self.api_key = api_key
@@ -192,7 +206,6 @@ class _LLMClient:
         temperature: float = 0.3,
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
-        """Send a chat completion request and return parsed JSON content."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -220,24 +233,84 @@ class _LLMClient:
 
     @staticmethod
     def _extract_json(raw: dict[str, Any]) -> dict[str, Any]:
-        """Pull the JSON payload out of a chat completion response."""
         try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as exc:
-            logger.error("Unexpected LLM response structure: {}", raw)
-            raise ValueError("Could not extract content from LLM response") from exc
+            logger.error("Unexpected LLM response: {}", raw)
+            raise ValueError("Could not extract LLM content") from exc
 
         text = content.strip()
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
+            lines = [
+                ln for ln in lines
+                if not ln.strip().startswith("```")
+            ]
             text = "\n".join(lines)
 
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
             logger.error("LLM response not valid JSON: {}", text[:500])
-            raise ValueError("LLM response was not valid JSON") from exc
+            raise ValueError("LLM response not valid JSON") from exc
+
+
+# ---------------------------------------------------------------------------
+# Round-trip validation
+# ---------------------------------------------------------------------------
+
+def _validate_platform_roundtrip(
+    original: AssessmentQuestion,
+    revised: AssessmentQuestion,
+) -> None:
+    """Validate that the revised question can round-trip through platform JSON.
+
+    Raises ValueError if the revised question has structural problems
+    that would prevent re-upload.
+    """
+    # 1. Export to platform JSON and re-parse
+    exported = revised.to_platform_json()
+    try:
+        reparsed = AssessmentQuestion(**exported)
+    except Exception as exc:
+        raise ValueError(
+            f"Revised question fails round-trip parse: {exc}"
+        ) from exc
+
+    # 2. Verify structural invariants
+    errors: list[str] = []
+
+    if reparsed.prompt.typeId != original.prompt.typeId:
+        errors.append(
+            f"typeId changed: {original.prompt.typeId} → {reparsed.prompt.typeId}"
+        )
+
+    orig_keys = original.choice_keys()
+    rev_keys = reparsed.choice_keys()
+    if orig_keys != rev_keys:
+        errors.append(f"choice keys changed: {orig_keys} → {rev_keys}")
+
+    # Verify choice structure matches typeId
+    for c in reparsed.prompt.configuration.choices:
+        if original.prompt_type.value == "mc-block":
+            if "start" not in c or "end" not in c:
+                errors.append(f"mc-block choice {c.get('key')} missing start/end")
+        elif original.prompt_type.value == "mc-line":
+            if "choice" not in c:
+                errors.append(f"mc-line choice {c.get('key')} missing choice field")
+        elif original.prompt_type.value == "mc-code" and "code" not in c:
+                errors.append(f"mc-code choice {c.get('key')} missing code field")
+
+    if not reparsed.answers:
+        errors.append("answers array is empty")
+
+    if errors:
+        raise ValueError(
+            "Revised question has structural problems:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    logger.debug("Round-trip validation passed for {}", original.question_id)
 
 
 # ---------------------------------------------------------------------------
@@ -245,25 +318,21 @@ class _LLMClient:
 # ---------------------------------------------------------------------------
 
 class QuestionReviewer:
-    """Production-grade question quality reviewer.
+    """Feedback-driven question review engine.
 
-    Supports five modes:
-      review()       — single-pass rubric evaluation
-      multi_pass()   — N reviews → consensus Feedback
-      compare()      — diff original vs. revised question
-      batch()        — review a list of questions → BatchReport
-      revise()       — auto-generate improved question from feedback
+    Primary workflow:
+      validate_feedback()  — assess if a human comment is correct
+      improve_question()   — apply validated feedback to revise question
+      quality_check()      — independent quality assessment
     """
 
     def __init__(
         self,
         *,
-        rubric: ReviewRubric | None = None,
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        self.rubric = rubric or DEFAULT_RUBRIC
         _api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         _model = model or os.environ.get(
             "SELECTED_MODEL", "anthropic/claude-sonnet-4-20250514"
@@ -276,288 +345,189 @@ class QuestionReviewer:
         return self._llm.model
 
     # ------------------------------------------------------------------
-    # Single-pass review
+    # 1. Validate feedback
     # ------------------------------------------------------------------
 
-    async def review(self, question: Question) -> Review:
-        """Run a single-pass quality review. Returns a structured Review."""
-        logger.info("Reviewing question '{}' (id={})", question.title, question.id)
-
-        parsed = await self._llm.chat(
-            REVIEW_SYSTEM_PROMPT,
-            _build_review_prompt(question, self.rubric),
-        )
-        review = self._parsed_to_review(question.id, parsed)
-
-        logger.info(
-            "Review complete: verdict={}, score={:.1f}",
-            review.verdict, review.overall_score,
-        )
-        return review
-
-    # ------------------------------------------------------------------
-    # Multi-pass review → Feedback with consensus
-    # ------------------------------------------------------------------
-
-    async def multi_pass(
+    async def validate_feedback(
         self,
-        question: Question,
-        *,
-        passes: int = 3,
-        temperature_spread: float = 0.15,
-    ) -> Feedback:
-        """Run N independent reviews and aggregate into consensus Feedback.
+        question: AssessmentQuestion,
+        feedback: FeedbackComment,
+    ) -> FeedbackValidation:
+        """Assess whether a human feedback comment is technically correct.
 
-        Temperature varies across passes (base ± spread) to get diverse
-        evaluations from the same model.
+        Returns a FeedbackValidation with verdict, confidence, and reasoning.
         """
         logger.info(
-            "Multi-pass review ({} passes) for '{}' (id={})",
-            passes, question.title, question.id,
+            "Validating feedback on '{}': '{}'",
+            question.question_id,
+            feedback.comment[:80],
         )
-        base_temp = 0.3
-        prompt = _build_review_prompt(question, self.rubric)
-
-        async def _single_pass(pass_idx: int) -> Review:
-            temp = base_temp + (pass_idx - passes // 2) * temperature_spread
-            temp = max(0.0, min(1.0, temp))
-            parsed = await self._llm.chat(
-                REVIEW_SYSTEM_PROMPT, prompt, temperature=temp,
-            )
-            return self._parsed_to_review(question.id, parsed)
-
-        reviews = await asyncio.gather(
-            *[_single_pass(i) for i in range(passes)],
-            return_exceptions=True,
-        )
-
-        valid_reviews: list[Review] = []
-        for i, r in enumerate(reviews):
-            if isinstance(r, Exception):
-                logger.warning("Pass {} failed: {}", i, r)
-            else:
-                valid_reviews.append(r)
-
-        if not valid_reviews:
-            raise RuntimeError("All review passes failed")
-
-        feedback = Feedback(question_id=question.id, reviews=valid_reviews)
-        feedback.compute_consensus()
-
-        logger.info(
-            "Multi-pass consensus: verdict={}, score={:.1f}, disputed={}",
-            feedback.consensus_verdict, feedback.average_score, feedback.disputed_criteria,
-        )
-        return feedback
-
-    # ------------------------------------------------------------------
-    # Comparative review (original vs. revised)
-    # ------------------------------------------------------------------
-
-    async def compare(
-        self,
-        original: Question,
-        revised: Question,
-        original_review: Review,
-    ) -> ComparisonResult:
-        """Compare a revised question against its original + review."""
-        logger.info("Comparative review for question {}", original.id)
-
-        revised_review = await self.review(revised)
-
-        comparison_data = await self._llm.chat(
-            COMPARATIVE_SYSTEM_PROMPT,
-            _build_comparative_prompt(original, revised, original_review),
-        )
-
-        orig_scores = {cs.criterion: cs.score for cs in original_review.criterion_scores}
-        rev_scores = {cs.criterion: cs.score for cs in revised_review.criterion_scores}
-        all_criteria = set(orig_scores) | set(rev_scores)
-        criterion_deltas = [
-            CriterionDelta(
-                criterion=c,
-                original_score=orig_scores.get(c, 0.0),
-                revised_score=rev_scores.get(c, 0.0),
-                delta=round(rev_scores.get(c, 0.0) - orig_scores.get(c, 0.0), 2),
-            )
-            for c in all_criteria
-        ]
-
-        result = ComparisonResult(
-            question_id=original.id,
-            original_score=original_review.overall_score,
-            revised_score=revised_review.overall_score,
-            score_delta=round(revised_review.overall_score - original_review.overall_score, 2),
-            criterion_deltas=criterion_deltas,
-            improvements=comparison_data.get("improvements", []),
-            regressions=comparison_data.get("regressions", []),
-            unresolved_issues=comparison_data.get("unresolved_issues", []),
-            revision_adequate=comparison_data.get("revision_adequate", False),
-            original_review=original_review,
-            revised_review=revised_review,
-        )
-
-        logger.info(
-            "Comparison: {:.1f} → {:.1f} (Δ{:+.1f}), adequate={}",
-            result.original_score, result.revised_score,
-            result.score_delta, result.revision_adequate,
-        )
-        return result
-
-    # ------------------------------------------------------------------
-    # Batch review
-    # ------------------------------------------------------------------
-
-    async def batch(
-        self,
-        questions: list[Question],
-        *,
-        concurrency: int = 3,
-    ) -> BatchReport:
-        """Review a batch of questions with controlled concurrency."""
-        logger.info("Batch review: {} questions, concurrency={}", len(questions), concurrency)
-
-        semaphore = asyncio.Semaphore(concurrency)
-        all_suggestions: list[str] = []
-        all_criterion_scores: dict[str, list[float]] = {}
-
-        async def _review_one(q: Question) -> BatchReportEntry:
-            async with semaphore:
-                review = await self.review(q)
-                all_suggestions.extend(review.suggestions)
-                for cs in review.criterion_scores:
-                    all_criterion_scores.setdefault(cs.criterion, []).append(cs.score)
-                return BatchReportEntry(
-                    question_id=q.id,
-                    title=q.title,
-                    domain=q.domain,
-                    verdict=review.verdict,
-                    score=review.overall_score,
-                    top_issue=review.suggestions[0] if review.suggestions else "",
-                )
-
-        results = await asyncio.gather(
-            *[_review_one(q) for q in questions],
-            return_exceptions=True,
-        )
-
-        entries = [r for r in results if isinstance(r, BatchReportEntry)]
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                logger.warning("Batch item {} failed: {}", i, r)
-
-        report = BatchReport(entries=entries)
-        report.compute_stats()
-
-        issue_counts = Counter(all_suggestions)
-        report.common_issues = [
-            issue for issue, count in issue_counts.most_common(10) if count >= 2
-        ]
-
-        if all_criterion_scores:
-            avg_by_criterion = {
-                c: sum(scores) / len(scores)
-                for c, scores in all_criterion_scores.items()
-            }
-            sorted_criteria = sorted(avg_by_criterion.items(), key=lambda x: x[1])
-            report.weakest_criteria = [c for c, _ in sorted_criteria[:3]]
-
-        logger.info(
-            "Batch complete: {}/{} passed ({:.0f}%), avg score {:.1f}",
-            report.passed, report.total, report.pass_rate, report.average_score,
-        )
-        return report
-
-    # ------------------------------------------------------------------
-    # Auto-revision generation
-    # ------------------------------------------------------------------
-
-    async def revise(self, question: Question, review: Review) -> Question:
-        """Auto-generate an improved version of a question based on review feedback."""
-        logger.info("Auto-revising question '{}' (id={})", question.title, question.id)
 
         parsed = await self._llm.chat(
-            REVISION_SYSTEM_PROMPT,
-            _build_revision_prompt(question, review),
+            VALIDATE_FEEDBACK_SYSTEM,
+            _build_validate_prompt(question, feedback),
+        )
+
+        validation = FeedbackValidation(
+            feedback_id=feedback.id,
+            question_path=question.path,
+            verdict=FeedbackVerdict(parsed.get("verdict", "unclear")),
+            confidence=float(parsed.get("confidence", 0.5)),
+            reasoning=parsed.get("reasoning", ""),
+            affected_areas=parsed.get("affected_areas", []),
+            requires_human_review=parsed.get(
+                "requires_human_review", False
+            ),
+            suggested_action=parsed.get("suggested_action", "no_action"),
+            raw_llm_response=parsed,
+        )
+
+        logger.info(
+            "Validation: {} (confidence={:.0%}), action={}",
+            validation.verdict,
+            validation.confidence,
+            validation.suggested_action,
+        )
+        return validation
+
+    # ------------------------------------------------------------------
+    # 2. Improve question based on validated feedback
+    # ------------------------------------------------------------------
+
+    async def improve_question(
+        self,
+        question: AssessmentQuestion,
+        feedback: FeedbackComment,
+        validation: FeedbackValidation,
+    ) -> QuestionRevision:
+        """Generate an improved question that addresses validated feedback.
+
+        The revised question is returned in the exact platform JSON format
+        so it can be uploaded back without modification.
+
+        Only call this when validation.verdict is 'valid' or
+        'partially_valid'.
+        """
+        logger.info(
+            "Improving question '{}' based on feedback",
+            question.question_id,
+        )
+
+        parsed = await self._llm.chat(
+            IMPROVE_QUESTION_SYSTEM,
+            _build_improve_prompt(question, feedback, validation),
             temperature=0.4,
         )
 
-        revised = question.model_copy(deep=True)
-        revised.title = parsed.get("revised_title", question.title)
-        revised.body = parsed.get("revised_body", question.body)
+        # Parse the full revised question from LLM output
+        revised_data = parsed.get("revised_question", {})
+        if not revised_data:
+            logger.warning(
+                "LLM did not return revised_question, "
+                "falling back to field-level patching"
+            )
+            revised_data = question.to_platform_json()
 
-        if parsed.get("revised_choices"):
-            revised.choices = [
-                Choice(
-                    label=rc.get("label", ""),
-                    text=rc.get("text", ""),
-                    is_correct=rc.get("is_correct", False),
-                    explanation=rc.get("explanation"),
-                )
-                for rc in parsed["revised_choices"]
-            ]
+        # Build revised AssessmentQuestion from platform JSON
+        revised = AssessmentQuestion(**revised_data)
 
-        if parsed.get("revised_correct_answer"):
-            revised.correct_answer = parsed["revised_correct_answer"]
+        # Safety: ensure immutable fields were not changed
+        revised.path = question.path
+        revised.parameters = question.parameters
+        revised.prompt.typeId = question.prompt.typeId
 
-        changes = parsed.get("changes_made", [])
+        # Validate round-trip: export and re-parse to catch schema drift
+        _validate_platform_roundtrip(question, revised)
+
+        revision = QuestionRevision(
+            question_path=question.path,
+            feedback_id=feedback.id,
+            validation_id=validation.id,
+            original=question,
+            revised=revised,
+            changes_made=parsed.get("changes_made", []),
+            rationale=parsed.get("rationale", ""),
+        )
+
         logger.info(
-            "Revision generated: {} changes — {}",
-            len(changes), parsed.get("rationale", ""),
+            "Revision: {} changes — {}",
+            len(revision.changes_made),
+            revision.rationale[:80],
         )
-        return revised
+        return revision
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # 3. Independent quality check
     # ------------------------------------------------------------------
 
-    def _parsed_to_review(self, question_id: str, parsed: dict[str, Any]) -> Review:
-        """Convert parsed LLM JSON into a Review object with weighted scoring."""
-        rubric_map = {c.name: c for c in self.rubric.criteria}
+    async def quality_check(
+        self,
+        question: AssessmentQuestion,
+    ) -> dict[str, Any]:
+        """Run an independent quality assessment on a question.
 
-        criterion_scores: list[CriterionScore] = []
-        for cs in parsed.get("criterion_scores", []):
-            name = cs.get("criterion", "")
-            rubric_criterion = rubric_map.get(name)
-            weight = rubric_criterion.weight if rubric_criterion else 1.0
-            criterion_scores.append(CriterionScore(
-                criterion=name,
-                score=float(cs.get("score", 0)),
-                weight=weight,
-                feedback=cs.get("feedback", ""),
-            ))
-
-        total_weight = sum(cs.weight for cs in criterion_scores) or 1.0
-        overall_score = sum(cs.score * cs.weight for cs in criterion_scores) / total_weight
-
-        if overall_score >= self.rubric.pass_threshold:
-            verdict = ReviewVerdict.PASS
-        elif overall_score >= self.rubric.revision_threshold:
-            verdict = ReviewVerdict.NEEDS_REVISION
-        else:
-            verdict = ReviewVerdict.FAIL
-
-        revised_choices = None
-        if parsed.get("revised_choices"):
-            revised_choices = [
-                Choice(
-                    label=rc.get("label", ""),
-                    text=rc.get("text", ""),
-                    is_correct=rc.get("is_correct", False),
-                    explanation=rc.get("explanation"),
-                )
-                for rc in parsed["revised_choices"]
-            ]
-
-        return Review(
-            question_id=question_id,
-            verdict=verdict,
-            overall_score=round(overall_score, 2),
-            criterion_scores=criterion_scores,
-            summary=parsed.get("summary", ""),
-            suggestions=parsed.get("suggestions", []),
-            revised_body=parsed.get("revised_body"),
-            revised_choices=revised_choices,
-            reviewer_model=self.model,
-            raw_llm_response=parsed,
+        Returns raw structured scores and issues — not feedback-driven,
+        useful for batch auditing or pre-publish checks.
+        """
+        logger.info(
+            "Quality check on '{}'",
+            question.question_id,
         )
+
+        parsed = await self._llm.chat(
+            QUALITY_CHECK_SYSTEM,
+            _build_quality_check_prompt(question),
+        )
+
+        logger.info(
+            "Quality check: score={}, verdict={}",
+            parsed.get("overall_score"),
+            parsed.get("verdict"),
+        )
+        return parsed
+
+    # ------------------------------------------------------------------
+    # Export helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def export_revision(
+        revision: QuestionRevision,
+    ) -> str:
+        """Export the revised question as platform-ready JSON.
+
+        This is the string you upload back to the external platform.
+        """
+        return json.dumps(
+            revision.revised.to_platform_json(), indent=2
+        )
+
+    # ------------------------------------------------------------------
+    # Full pipeline: validate → improve (if valid)
+    # ------------------------------------------------------------------
+
+    async def process_feedback(
+        self,
+        question: AssessmentQuestion,
+        feedback: FeedbackComment,
+        *,
+        auto_improve: bool = True,
+    ) -> tuple[
+        FeedbackValidation, QuestionRevision | None
+    ]:
+        """End-to-end: validate feedback, then improve if valid.
+
+        Returns (validation, revision_or_None).
+        """
+        validation = await self.validate_feedback(question, feedback)
+
+        revision = None
+        if auto_improve and validation.verdict in (
+            FeedbackVerdict.VALID,
+            FeedbackVerdict.PARTIALLY_VALID,
+        ):
+            revision = await self.improve_question(
+                question, feedback, validation
+            )
+
+        return validation, revision

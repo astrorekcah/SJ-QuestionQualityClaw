@@ -1,4 +1,10 @@
-"""Domain models for assessment questions, reviews, and feedback."""
+"""Domain models — matches the actual platform question schema + feedback workflow.
+
+Platform question types:
+  mc-block: select a block of code (choices reference line ranges)
+  mc-code:  select a code snippet (choices contain inline code)
+  mc-line:  select a single line (choices reference line numbers)
+"""
 
 from __future__ import annotations
 
@@ -13,276 +19,271 @@ from pydantic import BaseModel, Field
 # Enums
 # ---------------------------------------------------------------------------
 
+class PromptType(StrEnum):
+    """Platform question prompt types."""
+
+    MC_BLOCK = "mc-block"
+    MC_CODE = "mc-code"
+    MC_LINE = "mc-line"
+
+
+class FeedbackVerdict(StrEnum):
+    """Result of validating a human feedback comment."""
+
+    VALID = "valid"
+    PARTIALLY_VALID = "partially_valid"
+    INVALID = "invalid"
+    UNCLEAR = "unclear"
+
+
 class QuestionState(StrEnum):
     """Lifecycle states for an assessment question."""
 
-    DRAFT = "draft"
-    REVIEW = "review"
+    ACTIVE = "active"
+    FEEDBACK_RECEIVED = "feedback_received"
+    UNDER_REVIEW = "under_review"
     REVISION = "revision"
-    APPROVED = "approved"
+    UPDATED = "updated"
     REJECTED = "rejected"
-    PUBLISHED = "published"
-
-
-class QuestionType(StrEnum):
-    """Supported question formats."""
-
-    MULTIPLE_CHOICE = "multiple_choice"
-    TRUE_FALSE = "true_false"
-    SHORT_ANSWER = "short_answer"
-    CODE_REVIEW = "code_review"
-    SCENARIO = "scenario"
-
-
-class Difficulty(StrEnum):
-    """Question difficulty tiers."""
-
-    BEGINNER = "beginner"
-    INTERMEDIATE = "intermediate"
-    ADVANCED = "advanced"
-    EXPERT = "expert"
-
-
-class ReviewVerdict(StrEnum):
-    """Outcome of a quality review."""
-
-    PASS = "pass"
-    NEEDS_REVISION = "needs_revision"
-    FAIL = "fail"
 
 
 # ---------------------------------------------------------------------------
-# Core Models
+# Platform question schema (matches real JSON files exactly)
 # ---------------------------------------------------------------------------
 
-class Choice(BaseModel):
-    """A single answer choice for multiple-choice questions."""
+class BlockChoice(BaseModel):
+    """Choice for mc-block: references a range of code lines."""
 
-    label: str = Field(description="Choice identifier (A, B, C, D, ...)")
-    text: str = Field(description="Choice content")
-    is_correct: bool = False
-    explanation: str | None = Field(
-        default=None,
-        description="Why this choice is correct or why it's a good distractor",
+    key: str
+    start: int
+    end: int
+
+
+class CodeChoice(BaseModel):
+    """Choice for mc-code: contains inline code snippet."""
+
+    key: str
+    code: list[str]
+
+
+class LineChoice(BaseModel):
+    """Choice for mc-line: references a single line number."""
+
+    key: str
+    choice: int
+
+
+class PromptConfiguration(BaseModel):
+    """The prompt configuration — flexible to handle all question types."""
+
+    prompt: str = Field(description="The question stem / scenario text")
+    code: list[str] = Field(default_factory=list, description="Code lines")
+    choices: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Raw choices — shape varies by typeId",
     )
+    # mc-code specific: which line to insert the code choice at
+    codeLine: int | None = Field(default=None, alias="codeLine")  # noqa: N815
+
+    model_config = {"populate_by_name": True}
 
 
-class Question(BaseModel):
-    """An assessment question with metadata."""
+class Prompt(BaseModel):
+    """The prompt section of a platform question."""
 
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
-    title: str = Field(description="Short title for the question")
-    body: str = Field(description="Full question text / stem")
-    question_type: QuestionType = QuestionType.MULTIPLE_CHOICE
-    difficulty: Difficulty = Difficulty.INTERMEDIATE
-    domain: str = Field(default="general", description="Subject domain (e.g. security, web3)")
-    tags: list[str] = Field(default_factory=list)
-    choices: list[Choice] = Field(default_factory=list)
-    correct_answer: str | None = Field(
-        default=None,
-        description="Expected answer for non-MCQ types",
+    typeId: str = Field(description="mc-block | mc-code | mc-line")  # noqa: N815
+    configuration: PromptConfiguration
+
+
+class Answer(BaseModel):
+    """A correct answer reference."""
+
+    value: str
+
+
+class AssessmentQuestion(BaseModel):
+    """A platform assessment question — matches the real JSON schema exactly.
+
+    This is the primary data model. All questions are loaded, stored,
+    and exported in this format.
+    """
+
+    path: str = Field(description="Categorization path in the question bank")
+    title: str = Field(description="Display title")
+    parameters: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Metadata (e.g. programmingLanguage)",
     )
-    reference_material: str | None = Field(
-        default=None,
-        description="Source material or context for the question",
-    )
-    state: QuestionState = QuestionState.DRAFT
-    author: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    prompt: Prompt
+    answers: list[Answer] = Field(default_factory=list)
 
-    # External references
-    github_pr_url: str | None = None
+    # --- Derived helpers (not in platform JSON) ---
+    state: QuestionState = QuestionState.ACTIVE
     linear_ticket_id: str | None = None
+    github_pr_url: str | None = None
+
+    @property
+    def question_id(self) -> str:
+        """Stable ID derived from the path."""
+        return self.path.rsplit("/", 1)[-1] if "/" in self.path else self.path
+
+    @property
+    def prompt_type(self) -> PromptType:
+        return PromptType(self.prompt.typeId)
+
+    @property
+    def language(self) -> str:
+        langs = self.parameters.get("programmingLanguage", [])
+        return langs[0] if langs else "unknown"
+
+    @property
+    def correct_answer_key(self) -> str | None:
+        return self.answers[0].value if self.answers else None
+
+    @property
+    def code_text(self) -> str:
+        """Join code lines into a single string for LLM context."""
+        return "\n".join(self.prompt.configuration.code)
+
+    @property
+    def stem(self) -> str:
+        return self.prompt.configuration.prompt
+
+    def choice_keys(self) -> list[str]:
+        return [c["key"] for c in self.prompt.configuration.choices]
+
+    def describe_choice(self, key: str) -> str:
+        """Human-readable description of what a choice points to."""
+        for c in self.prompt.configuration.choices:
+            if c.get("key") != key:
+                continue
+            if self.prompt_type == PromptType.MC_BLOCK:
+                start, end = c["start"], c["end"]
+                lines = self.prompt.configuration.code[start:end + 1]
+                return f"Lines {start}-{end}:\n" + "\n".join(lines)
+            elif self.prompt_type == PromptType.MC_LINE:
+                line_num = c["choice"]
+                line = self.prompt.configuration.code[line_num]
+                return f"Line {line_num}: {line}"
+            elif self.prompt_type == PromptType.MC_CODE:
+                return "\n".join(c.get("code", []))
+        return f"Choice {key} (not found)"
+
+    def to_platform_json(self) -> dict[str, Any]:
+        """Export back to the platform JSON format (no internal fields)."""
+        return self.model_dump(
+            include={"path", "title", "parameters", "prompt", "answers"},
+            by_alias=True,
+        )
 
 
-class CriterionScore(BaseModel):
-    """Score for a single review criterion."""
+# ---------------------------------------------------------------------------
+# Feedback workflow models
+# ---------------------------------------------------------------------------
 
-    criterion: str = Field(description="Name of the quality criterion")
-    score: float = Field(ge=0.0, le=10.0, description="Score from 0-10")
-    weight: float = Field(default=1.0, ge=0.0, description="Weight for overall scoring")
-    feedback: str = Field(description="Specific feedback for this criterion")
+class FeedbackComment(BaseModel):
+    """A human feedback comment on a question.
 
-
-class Review(BaseModel):
-    """A quality review of an assessment question."""
+    This is the input trigger for the whole system — someone leaves a
+    comment saying "the correct answer is wrong" or "choice B is
+    also correct" or "the scenario is unrealistic".
+    """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
-    question_id: str = Field(description="ID of the reviewed question")
-    verdict: ReviewVerdict
-    overall_score: float = Field(ge=0.0, le=10.0)
-    criterion_scores: list[CriterionScore] = Field(default_factory=list)
-    summary: str = Field(description="High-level review summary")
-    suggestions: list[str] = Field(
+    question_path: str = Field(description="Path of the question being commented on")
+    author: str = Field(default="reviewer")
+    comment: str = Field(description="The raw feedback text")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Optional: which specific choice or line the comment refers to
+    target_choice: str | None = None
+    target_lines: tuple[int, int] | None = None
+
+
+class FeedbackValidation(BaseModel):
+    """Result of LLM-validating a human feedback comment.
+
+    The system analyzes whether the feedback is technically correct
+    before applying any changes.
+    """
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    feedback_id: str
+    question_path: str
+    verdict: FeedbackVerdict
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="How confident the LLM is in its assessment",
+    )
+    reasoning: str = Field(description="Detailed analysis of why the feedback is/isn't valid")
+    affected_areas: list[str] = Field(
         default_factory=list,
-        description="Actionable improvement suggestions",
+        description="What parts of the question are affected (stem, choices, answer, code)",
     )
-    revised_body: str | None = Field(
-        default=None,
-        description="Suggested rewrite of the question body (if applicable)",
+    requires_human_review: bool = Field(
+        default=False,
+        description="True if the LLM can't determine validity with high confidence",
     )
-    revised_choices: list[Choice] | None = Field(
-        default=None,
-        description="Suggested rewrite of choices (if applicable)",
-    )
-    reviewer_model: str = Field(
-        default="unknown",
-        description="LLM model used for the review",
+    suggested_action: str = Field(
+        default="",
+        description="What to do: 'update_answer', 'revise_stem', 'revise_choices', etc.",
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    raw_llm_response: dict[str, Any] | None = Field(
-        default=None,
-        description="Full LLM response for audit trail",
-    )
+    raw_llm_response: dict[str, Any] | None = None
 
 
-class Feedback(BaseModel):
-    """Aggregated feedback across multiple reviews of a question."""
+class QuestionRevision(BaseModel):
+    """A revised version of a question produced by the system."""
 
-    question_id: str
-    reviews: list[Review] = Field(default_factory=list)
-    average_score: float = 0.0
-    consensus_verdict: ReviewVerdict = ReviewVerdict.NEEDS_REVISION
-    key_issues: list[str] = Field(default_factory=list)
-    revision_count: int = 0
-    disputed_criteria: list[str] = Field(
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    question_path: str
+    feedback_id: str
+    validation_id: str
+    original: AssessmentQuestion
+    revised: AssessmentQuestion
+    changes_made: list[str] = Field(
         default_factory=list,
-        description="Criteria where reviewer scores diverged by >2 points",
+        description="Description of each change",
     )
-
-    def compute_consensus(self) -> None:
-        """Recompute aggregated metrics from review list."""
-        if not self.reviews:
-            return
-        self.average_score = sum(r.overall_score for r in self.reviews) / len(self.reviews)
-        verdicts = [r.verdict for r in self.reviews]
-        if all(v == ReviewVerdict.PASS for v in verdicts):
-            self.consensus_verdict = ReviewVerdict.PASS
-        elif any(v == ReviewVerdict.FAIL for v in verdicts):
-            self.consensus_verdict = ReviewVerdict.FAIL
-        else:
-            self.consensus_verdict = ReviewVerdict.NEEDS_REVISION
-        # Collect unique issues
-        seen: set[str] = set()
-        self.key_issues = []
-        for review in self.reviews:
-            for suggestion in review.suggestions:
-                if suggestion not in seen:
-                    self.key_issues.append(suggestion)
-                    seen.add(suggestion)
-        # Detect disputed criteria (>2 point spread across passes)
-        self.disputed_criteria = []
-        if len(self.reviews) >= 2:
-            criteria_scores: dict[str, list[float]] = {}
-            for review in self.reviews:
-                for cs in review.criterion_scores:
-                    criteria_scores.setdefault(cs.criterion, []).append(cs.score)
-            for criterion, scores in criteria_scores.items():
-                if max(scores) - min(scores) > 2.0:
-                    self.disputed_criteria.append(criterion)
-
-
-class CriterionDelta(BaseModel):
-    """Score change for a single criterion between question versions."""
-
-    criterion: str
-    original_score: float
-    revised_score: float
-    delta: float = Field(description="Positive = improved, negative = regressed")
-    note: str = ""
-
-
-class ComparisonResult(BaseModel):
-    """Side-by-side comparison of a question before and after revision."""
-
-    question_id: str
-    original_score: float
-    revised_score: float
-    score_delta: float
-    criterion_deltas: list[CriterionDelta] = Field(default_factory=list)
-    improvements: list[str] = Field(default_factory=list)
-    regressions: list[str] = Field(default_factory=list)
-    unresolved_issues: list[str] = Field(
-        default_factory=list,
-        description="Suggestions from original review not addressed by revision",
+    rationale: str = Field(
+        default="",
+        description="Why these changes address the feedback",
     )
-    revision_adequate: bool = Field(
-        default=False,
-        description="True if revision improved score and addressed key feedback",
-    )
-    original_review: Review | None = None
-    revised_review: Review | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-class BatchReportEntry(BaseModel):
-    """Review result for one question in a batch."""
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
 
-    question_id: str
-    title: str
-    domain: str
-    verdict: ReviewVerdict
-    score: float
-    top_issue: str = ""
+class ReviewEvent(BaseModel):
+    """A single event in the audit trail for a question."""
 
-
-class BatchReport(BaseModel):
-    """Aggregate report for a batch of question reviews."""
-
-    total: int = 0
-    passed: int = 0
-    needs_revision: int = 0
-    failed: int = 0
-    pass_rate: float = 0.0
-    average_score: float = 0.0
-    entries: list[BatchReportEntry] = Field(default_factory=list)
-    common_issues: list[str] = Field(
-        default_factory=list,
-        description="Issues appearing across 2+ questions",
-    )
-    weakest_criteria: list[str] = Field(
-        default_factory=list,
-        description="Criteria with lowest average scores across the batch",
-    )
-
-    def compute_stats(self) -> None:
-        """Recompute aggregate stats from entries."""
-        self.total = len(self.entries)
-        self.passed = sum(1 for e in self.entries if e.verdict == ReviewVerdict.PASS)
-        self.needs_revision = sum(
-            1 for e in self.entries if e.verdict == ReviewVerdict.NEEDS_REVISION
-        )
-        self.failed = sum(1 for e in self.entries if e.verdict == ReviewVerdict.FAIL)
-        self.pass_rate = (self.passed / self.total * 100) if self.total else 0.0
-        self.average_score = (
-            sum(e.score for e in self.entries) / self.total if self.total else 0.0
-        )
-
-
-class RevisionHistoryEntry(BaseModel):
-    """A single revision event in a question's history."""
-
-    version: int
-    question_snapshot: Question
-    review: Review
-    comparison: ComparisonResult | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    event_type: str = Field(
+        description="feedback_received | validation_complete | revision_created | "
+        "human_review_requested | question_updated | question_rejected"
+    )
+    feedback_id: str | None = None
+    validation_id: str | None = None
+    revision_id: str | None = None
+    summary: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
-class RevisionHistory(BaseModel):
-    """Full audit trail of a question's revisions and reviews."""
+class QuestionAuditTrail(BaseModel):
+    """Full history of feedback and revisions for a question."""
 
-    question_id: str
-    entries: list[RevisionHistoryEntry] = Field(default_factory=list)
+    question_path: str
+    events: list[ReviewEvent] = Field(default_factory=list)
 
     @property
-    def current_version(self) -> int:
-        return len(self.entries)
+    def feedback_count(self) -> int:
+        return sum(1 for e in self.events if e.event_type == "feedback_received")
 
     @property
-    def latest_review(self) -> Review | None:
-        return self.entries[-1].review if self.entries else None
+    def revision_count(self) -> int:
+        return sum(1 for e in self.events if e.event_type == "revision_created")
 
     @property
-    def score_trajectory(self) -> list[float]:
-        return [e.review.overall_score for e in self.entries]
+    def latest_event(self) -> ReviewEvent | None:
+        return self.events[-1] if self.events else None
