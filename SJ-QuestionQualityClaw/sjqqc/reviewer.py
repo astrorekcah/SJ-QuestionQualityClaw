@@ -49,34 +49,6 @@ You MUST respond with valid JSON:
 }
 """
 
-IMPROVE_QUESTION_SYSTEM = """\
-You are QuestionQualityClaw. Given an assessment question and validated feedback,
-produce an improved version that addresses the feedback.
-
-CRITICAL: The output must be re-uploadable to the platform without modification.
-You must return the COMPLETE question in the EXACT platform JSON schema.
-
-Rules:
-- Return the full question object with path, title, parameters, prompt, and answers
-- The prompt.typeId MUST stay the same
-- The prompt.configuration.choices MUST keep the exact same structure per typeId:
-  - mc-block: each choice has {"key": "x", "start": N, "end": N}
-  - mc-code: each choice has {"key": "x", "code": ["line1", ...]}
-  - mc-line: each choice has {"key": "x", "choice": N}
-- Keep the same number of choices with the same keys (a, b, c, d)
-- The answers array format: [{"value": "<key>"}]
-- If codeLine exists in the original, preserve it
-- Do NOT add any extra fields the platform doesn't expect
-- Do NOT change the path or parameters
-
-You MUST respond with valid JSON:
-{
-  "revised_question": { <full platform question JSON> },
-  "changes_made": ["<description of change 1>", ...],
-  "rationale": "<why these changes address the feedback>"
-}
-"""
-
 QUALITY_CHECK_SYSTEM = """\
 You are QuestionQualityClaw performing an independent quality check on a
 secure-coding assessment question. Evaluate the question on these dimensions:
@@ -154,31 +126,6 @@ def _build_validate_prompt(
     )
 
 
-def _build_improve_prompt(
-    q: AssessmentQuestion,
-    feedback: FeedbackComment,
-    validation: FeedbackValidation,
-) -> str:
-    # Include the raw platform JSON so the LLM sees the exact format to preserve
-    platform_json = json.dumps(q.to_platform_json(), indent=2)
-    return (
-        f"## Original Question (exact platform format — preserve this structure)\n"
-        f"```json\n{platform_json}\n```\n\n"
-        f"## Human-Readable View\n"
-        f"{_format_question_for_llm(q)}\n\n"
-        "---\n\n"
-        "## Validated Feedback\n"
-        f"**Comment**: {feedback.comment}\n"
-        f"**Verdict**: {validation.verdict}\n"
-        f"**Reasoning**: {validation.reasoning}\n"
-        f"**Suggested action**: {validation.suggested_action}\n"
-        f"**Affected areas**: {', '.join(validation.affected_areas)}\n\n"
-        "Return the COMPLETE revised question in the `revised_question` field "
-        "using the EXACT same JSON structure shown above. "
-        "The output must be directly uploadable to the platform."
-    )
-
-
 def _build_quality_check_prompt(q: AssessmentQuestion) -> str:
     return (
         f"{_format_question_for_llm(q)}\n\n"
@@ -253,64 +200,6 @@ class _LLMClient:
         except json.JSONDecodeError as exc:
             logger.error("LLM response not valid JSON: {}", text[:500])
             raise ValueError("LLM response not valid JSON") from exc
-
-
-# ---------------------------------------------------------------------------
-# Round-trip validation
-# ---------------------------------------------------------------------------
-
-def _validate_platform_roundtrip(
-    original: AssessmentQuestion,
-    revised: AssessmentQuestion,
-) -> None:
-    """Validate that the revised question can round-trip through platform JSON.
-
-    Raises ValueError if the revised question has structural problems
-    that would prevent re-upload.
-    """
-    # 1. Export to platform JSON and re-parse
-    exported = revised.to_platform_json()
-    try:
-        reparsed = AssessmentQuestion(**exported)
-    except Exception as exc:
-        raise ValueError(
-            f"Revised question fails round-trip parse: {exc}"
-        ) from exc
-
-    # 2. Verify structural invariants
-    errors: list[str] = []
-
-    if reparsed.prompt.typeId != original.prompt.typeId:
-        errors.append(
-            f"typeId changed: {original.prompt.typeId} → {reparsed.prompt.typeId}"
-        )
-
-    orig_keys = original.choice_keys()
-    rev_keys = reparsed.choice_keys()
-    if orig_keys != rev_keys:
-        errors.append(f"choice keys changed: {orig_keys} → {rev_keys}")
-
-    # Verify choice structure matches typeId
-    for c in reparsed.prompt.configuration.choices:
-        if original.prompt_type.value == "mc-block":
-            if "start" not in c or "end" not in c:
-                errors.append(f"mc-block choice {c.get('key')} missing start/end")
-        elif original.prompt_type.value == "mc-line":
-            if "choice" not in c:
-                errors.append(f"mc-line choice {c.get('key')} missing choice field")
-        elif original.prompt_type.value == "mc-code" and "code" not in c:
-                errors.append(f"mc-code choice {c.get('key')} missing code field")
-
-    if not reparsed.answers:
-        errors.append("answers array is empty")
-
-    if errors:
-        raise ValueError(
-            "Revised question has structural problems:\n"
-            + "\n".join(f"  - {e}" for e in errors)
-        )
-
-    logger.debug("Round-trip validation passed for {}", original.question_id)
 
 
 # ---------------------------------------------------------------------------

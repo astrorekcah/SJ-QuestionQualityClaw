@@ -1,91 +1,64 @@
 # SJ-QuestionQualityClaw
 
-Assessment question quality review agent — IronClaw-powered, with GitHub, Linear, and LLM integration.
+Feedback-driven assessment question quality agent. Reads questions from GitHub, validates reviewer feedback via OpenRouter, applies targeted fixes through an IronClaw skill pipeline, and tracks everything in Linear.
 
 ## Quick Start
 
 ```bash
-# 1. Install
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
-
-# 2. Configure
 cp .env.example .env   # Fill in API keys
-
-# 3. Test
-pytest tests/unit/ -v
-
-# 4. Review a question
-python scripts/run.py review question.json
+pytest tests/ -v       # 80 tests
 ```
 
-## Review Modes
+## Usage
 
 ```bash
-# Single review (quick triage)
-python scripts/run.py review question.json
+# Process feedback on a question
+python scripts/run.py process question.json "The correct answer should be D, not C"
 
-# Multi-pass (3 independent reviews → consensus)
-python scripts/run.py multi question.json
+# Quality check
+python scripts/run.py quality question.json
 
-# Batch review a domain
-python scripts/run.py batch security
-
-# Auto-revise from feedback
-python scripts/run.py revise question.json
+# Export platform JSON
+python scripts/run.py export question.json
 ```
 
 ## Architecture
 
 ```
-QuestionReviewer (5 modes)
-├── review()      — single-pass rubric evaluation
-├── multi_pass()  — N reviews → consensus Feedback
-├── compare()     — diff original vs. revised
-├── batch()       — list of questions → BatchReport
-└── revise()      — auto-generate improved question
-
-GitHub Client                    Linear Client
-├── questions as JSON in repo    ├── auto-create tickets
-├── PRs for new/revised          ├── state sync (draft→approved)
-└── issues for quality flags     └── review comments on tickets
-
-IronClaw Agent
-├── IDENTITY.md (agent persona + capabilities)
-├── skills/ (review + lifecycle playbooks)
-└── channels/ (Telegram, Slack, CLI)
+GitHub (question bank)
+  ↓ read question JSON
+IronClaw Agent (pipeline)
+  ↓ validate_feedback() via OpenRouter
+  ↓ classify → pick strategy skills
+  ↓ execute: fix_code → fix_answer → fix_choices → ...
+  ↓ each skill calls sjqqc.tools (apply + validate)
+  ↓ assemble changelog + export platform JSON
+GitHub (PR with revised question)
+  ↓ linked to
+Linear (ticket tracks entire cycle)
 ```
 
-## Quality Rubric
+## Core Modules
 
-7 criteria, weighted (total 12.0):
+- `sjqqc/pipeline.py` — IronClaw skill orchestrator: classify → execute → assemble
+- `sjqqc/reviewer.py` — validate_feedback, improve_question (delegates to pipeline), quality_check
+- `sjqqc/tools.py` — atomic mutation tools: update_answer, update_code, update_stem, update_choice, validate_step, export
+- `sjqqc/changelog.py` — field-level diff engine
+- `sjqqc/models.py` — AssessmentQuestion (platform-exact), FeedbackComment, FeedbackValidation, QuestionRevision, ImprovementChangelog
+- `sjqqc/github_client.py` — read questions, create revision PRs, create issues
+- `sjqqc/linear_client.py` — tickets, validation comments, revision comments, state management
 
-- **Correctness** (3.0x) — Is the answer right?
-- **Clarity** (2.0x) — Is the stem clear?
-- **Distractor Quality** (2.0x) — Are wrong choices plausible?
-- **Coverage** (1.5x) — Tests the intended domain?
-- **Fairness** (1.5x) — Free from bias/tricks?
-- **Difficulty Alignment** (1.0x) — Matches labeled difficulty?
-- **Actionability** (1.0x) — Learner improves from getting it wrong?
+## IronClaw Skills
 
-Verdicts: PASS (≥7.0), NEEDS_REVISION (5.0–6.9), FAIL (<5.0)
-
-## Tests
-
-```bash
-pytest tests/unit/ -v              # Unit tests (fast, no deps)
-pytest tests/ -v                   # Full suite
-ruff check sjqqc/ tests/ config/   # Lint
-```
+- `classify_feedback` — analyze feedback → pick strategy list
+- `fix_code` / `fix_answer` / `fix_stem` / `fix_choices` / `fix_scenario` / `fix_distractors`
+- `assemble_and_export` / `manage_lifecycle` / `validate_and_improve`
 
 ## Configuration
 
-Environment variables (`.env`):
-
-- `OPENROUTER_API_KEY` — LLM backend
-- `SELECTED_MODEL` — Model to use (default: claude-sonnet-4-20250514)
-- `GITHUB_TOKEN` — GitHub API access
-- `LINEAR_API_KEY` + `LINEAR_TEAM_ID` — Linear ticket management
-- `TELEGRAM_BOT_TOKEN` — Telegram channel (when configured)
-
-All tunables in `config/settings.py`.
+`.env`:
+- `OPENROUTER_API_KEY` + `SELECTED_MODEL` — LLM backend
+- `GITHUB_TOKEN` + `GITHUB_REPO_OWNER` + `GITHUB_REPO_NAME` — question repo
+- `LINEAR_API_KEY` + `LINEAR_TEAM_ID` — ticket management
