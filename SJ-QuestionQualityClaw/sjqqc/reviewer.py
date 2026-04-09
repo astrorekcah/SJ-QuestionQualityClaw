@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from config.quality_baseline import get_baseline
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -108,8 +109,10 @@ def _build_validate_prompt(
     q: AssessmentQuestion,
     feedback: FeedbackComment,
 ) -> str:
+    baseline = get_baseline(q.prompt.typeId)
     return (
         f"{_format_question_for_llm(q)}\n\n"
+        f"{baseline.to_prompt_section()}\n\n"
         "---\n\n"
         "## Feedback to Validate\n"
         f"**Author**: {feedback.author}\n"
@@ -122,14 +125,18 @@ def _build_validate_prompt(
             f"**Target lines**: {feedback.target_lines}\n"
             if feedback.target_lines else ""
         )
-        + "\nIs this feedback technically correct? Analyze carefully."
+        + "\nDoes this feedback identify a real quality issue "
+        "based on the baseline above? Analyze carefully."
     )
 
 
 def _build_quality_check_prompt(q: AssessmentQuestion) -> str:
+    baseline = get_baseline(q.prompt.typeId)
     return (
         f"{_format_question_for_llm(q)}\n\n"
-        "Perform a thorough quality check. Be specific about any issues found."
+        f"{baseline.to_prompt_section()}\n\n"
+        "Score this question against EVERY dimension in the baseline above. "
+        "Be specific about any issues found."
     )
 
 
