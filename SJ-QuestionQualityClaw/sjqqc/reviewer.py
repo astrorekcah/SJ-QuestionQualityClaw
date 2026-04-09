@@ -17,7 +17,6 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from sjqqc.changelog import build_changelog
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -401,68 +400,25 @@ class QuestionReviewer:
         feedback: FeedbackComment,
         validation: FeedbackValidation,
     ) -> QuestionRevision:
-        """Generate an improved question that addresses validated feedback.
+        """Improve a question using the IronClaw skill pipeline.
 
-        The revised question is returned in the exact platform JSON format
-        so it can be uploaded back without modification.
+        Delegates to ImprovementPipeline which:
+        1. Classifies feedback → picks strategy skills
+        2. Executes each strategy (LLM decides, tools apply + validate)
+        3. Assembles changelog + exports platform-exact JSON
 
-        Only call this when validation.verdict is 'valid' or
-        'partially_valid'.
+        Only call when validation.verdict is 'valid' or 'partially_valid'.
         """
-        logger.info(
-            "Improving question '{}' based on feedback",
-            question.question_id,
-        )
+        from sjqqc.pipeline import ImprovementPipeline, LLMClient
 
-        parsed = await self._llm.chat(
-            IMPROVE_QUESTION_SYSTEM,
-            _build_improve_prompt(question, feedback, validation),
-            temperature=0.4,
-        )
-
-        # Parse the full revised question from LLM output
-        revised_data = parsed.get("revised_question", {})
-        if not revised_data:
-            logger.warning(
-                "LLM did not return revised_question, "
-                "falling back to field-level patching"
+        pipeline = ImprovementPipeline(
+            llm=LLMClient(
+                api_key=self._llm.api_key,
+                model=self._llm.model,
+                base_url=self._llm.base_url,
             )
-            revised_data = question.to_platform_json()
-
-        # Build revised AssessmentQuestion from platform JSON
-        revised = AssessmentQuestion(**revised_data)
-
-        # Safety: ensure immutable fields were not changed
-        revised.path = question.path
-        revised.parameters = question.parameters
-        revised.prompt.typeId = question.prompt.typeId
-
-        # Validate round-trip: export and re-parse to catch schema drift
-        from sjqqc.tools import validate_roundtrip
-        validate_roundtrip(question, revised)
-
-        # Build field-level changelog
-        changelog = build_changelog(
-            question, revised, feedback_id=feedback.id
         )
-
-        revision = QuestionRevision(
-            question_path=question.path,
-            feedback_id=feedback.id,
-            validation_id=validation.id,
-            original=question,
-            revised=revised,
-            changes_made=parsed.get("changes_made", []),
-            rationale=parsed.get("rationale", ""),
-            changelog=changelog,
-        )
-
-        logger.info(
-            "Revision: {} field changes across {} strategies",
-            changelog.total_fields_changed,
-            len(changelog.strategies_used),
-        )
-        return revision
+        return await pipeline.run(question, feedback, validation)
 
     # ------------------------------------------------------------------
     # 3. Independent quality check
