@@ -49,6 +49,25 @@ class LinearClient:
         self.team_id = team_id or os.environ.get("LINEAR_TEAM_ID", "")
         self._state_ids: dict[str, str] | None = None
 
+    @property
+    def configured(self) -> bool:
+        """True if Linear API key is set (not a placeholder)."""
+        return bool(
+            self.api_key
+            and not self.api_key.startswith("{{")
+            and self.team_id
+            and not self.team_id.startswith("{{")
+        )
+
+    def _check_configured(self, operation: str) -> bool:
+        """Log warning and return False if not configured."""
+        if not self.configured:
+            logger.warning(
+                "Linear not configured — skipping {}", operation
+            )
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # GraphQL
     # ------------------------------------------------------------------
@@ -108,6 +127,8 @@ class LinearClient:
         feedback: FeedbackComment,
     ) -> str:
         """Create a ticket when feedback is received. Returns ticket ID."""
+        if not self._check_configured("create_feedback_ticket"):
+            return ""
         state_id = await self._resolve_state_id(
             QuestionState.FEEDBACK_RECEIVED
         )
@@ -145,6 +166,8 @@ class LinearClient:
         self, ticket_id: str, state: QuestionState
     ) -> None:
         """Transition ticket to a new workflow state."""
+        if not self._check_configured("update_state"):
+            return
         state_id = await self._resolve_state_id(state)
         if not state_id:
             logger.warning("No Linear state for {}", state)
@@ -166,6 +189,8 @@ class LinearClient:
         validation: FeedbackValidation,
     ) -> None:
         """Post validation results as a ticket comment."""
+        if not self._check_configured("post_validation"):
+            return
         body = self._validation_comment(validation)
         await self._post_comment(ticket_id, body)
 
@@ -177,6 +202,8 @@ class LinearClient:
         pr_url: str | None = None,
     ) -> None:
         """Post revision changelog as a ticket comment."""
+        if not self._check_configured("post_revision"):
+            return
         body = self._revision_comment(revision, pr_url)
         await self._post_comment(ticket_id, body)
 
@@ -186,6 +213,8 @@ class LinearClient:
         reason: str,
     ) -> None:
         """Post escalation notice when human review is needed."""
+        if not self._check_configured("post_escalation"):
+            return
         body = f"## Human Review Required\n\n{reason}"
         await self._post_comment(ticket_id, body)
 

@@ -23,13 +23,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from sjqqc.changelog import build_changelog, diff_fields
+from sjqqc.changelog import diff_fields
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
-    FeedbackValidation,
-    FeedbackVerdict,
-    ImprovementChangelog,
 )
 from sjqqc.tools import (
     export_platform_json,
@@ -166,15 +163,14 @@ def phase4_database() -> None:
     )
 
     try:
-        with psycopg.connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public' ORDER BY table_name"
-                )
-                tables = [row[0] for row in cur.fetchall()]
-                console.print(f"[green]✓ Connected to database[/green]")
-                console.print(f"  Tables: {', '.join(tables)}")
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' ORDER BY table_name"
+            )
+            tables = [row[0] for row in cur.fetchall()]
+            console.print("[green]✓ Connected to database[/green]")
+            console.print(f"  Tables: {', '.join(tables)}")
     except Exception as exc:
         console.print(f"[yellow]⚠ Database not available: {exc}[/yellow]")
 
@@ -252,7 +248,7 @@ async def phase6_live_llm(
         console.print("\n[dim]Running improvement pipeline...[/dim]")
         revision = await reviewer.improve_question(q, feedback, validation)
 
-        console.print(f"[green]✓ Revision created[/green]")
+        console.print("[green]✓ Revision created[/green]")
         console.print(f"  Rationale: {revision.rationale}")
         for change in revision.changes_made:
             console.print(f"  • {change}")
