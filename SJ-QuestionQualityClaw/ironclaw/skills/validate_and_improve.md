@@ -1,142 +1,82 @@
-# Skill: Validate Feedback & Improve Question
+# Skill: Validate & Improve
 
 ## When to Use
-Use this skill when a human leaves feedback on an assessment question.
-This is your primary skill — it drives the core workflow.
+Primary skill — triggered when feedback arrives on a question.
+Drives the complete workflow: validate → pipeline → PR → Linear.
 
-## End-to-End Pipeline
-
+## Quick Path (one call)
 ```python
 reviewer = QuestionReviewer()
-validation, revision = await reviewer.process_feedback(
-    question, feedback, auto_improve=True
-)
+validation, revision = await reviewer.process_feedback(question, feedback)
+```
+This validates, then if valid, runs the full IronClaw pipeline automatically.
+
+## Full Integration Path
+
+### 1. Load + track
+```python
+ghub = GitHubQuestionClient()
+question = ghub.get_question(file_path)
+
+linear = LinearClient()
+ticket_id = await linear.create_feedback_ticket(question, feedback)
 ```
 
-This runs validate → improve in one call. Use the individual methods
-when you need more control.
-
-## Step 1: Validate Feedback
-
+### 2. Validate
 ```python
 validation = await reviewer.validate_feedback(question, feedback)
+await linear.post_validation(ticket_id, validation)
 ```
+OpenRouter LLM analyzes the code in the question's language, checks if
+the feedback is technically correct, and returns a structured verdict.
 
-### Input
-- `question`: `AssessmentQuestion` loaded from platform JSON
-- `feedback`: `FeedbackComment` with the human's comment text
-
-### Output: `FeedbackValidation`
-- `verdict`: valid | partially_valid | invalid | unclear
-- `confidence`: 0.0–1.0
-- `reasoning`: detailed technical analysis
-- `affected_areas`: which parts of the question are affected
-- `requires_human_review`: true if confidence < 0.7
-- `suggested_action`: what to do next
-
-### Decision Logic
-```
-if verdict == "valid" or "partially_valid":
-    → proceed to improve_question()
-if verdict == "invalid":
-    → notify operator: "Feedback is incorrect because: {reasoning}"
-if verdict == "unclear":
-    → flag for human review
-if requires_human_review:
-    → escalate regardless of verdict
-```
-
-## Step 2: Improve Question
-
+### 3. Route on verdict
 ```python
-revision = await reviewer.improve_question(question, feedback, validation)
+if validation.verdict in ("valid", "partially_valid"):
+    # Run pipeline: classify → strategies → assemble
+    revision = await reviewer.improve_question(question, feedback, validation)
+
+    # Pipeline internally:
+    #   classify_feedback → ["fix_code", "fix_answer"]
+    #   execute fix_code → tools.update_code() + validate_step()
+    #   execute fix_answer → tools.update_answer() + validate_step()
+    #   assemble → changelog + validate_roundtrip + export
+
+    # Create PR + update Linear
+    pr_url = ghub.create_revision_pr(revision)
+    await linear.post_revision(ticket_id, revision, pr_url=pr_url)
+    await linear.update_state(ticket_id, QuestionState.UPDATED)
+
+elif validation.requires_human_review:
+    issue_url = ghub.create_feedback_issue(question, feedback, validation)
+    await linear.post_escalation(ticket_id, f"See: {issue_url}")
+
+else:  # invalid
+    await linear.update_state(ticket_id, QuestionState.ACTIVE)
 ```
 
-### Input
-- `question`: original AssessmentQuestion
-- `feedback`: the FeedbackComment being addressed
-- `validation`: the FeedbackValidation from step 1
-
-### Output: `QuestionRevision`
-- `original`: the unmodified question
-- `revised`: improved AssessmentQuestion in exact platform format
-- `changes_made`: list of what changed
-- `rationale`: why these changes address the feedback
-
-### Platform Format Guarantee
-The revised question is automatically validated:
-1. LLM returns complete question in platform JSON schema
-2. Immutable fields enforced (path, parameters, typeId)
-3. Round-trip validation: export → re-parse → structural check
-4. Choice structure verified per typeId (start/end, code, choice)
-
-### Export for Upload
+### 4. Export
 ```python
-json_str = QuestionReviewer.export_revision(revision)
-# → platform-ready JSON string, directly uploadable
+platform_json = QuestionReviewer.export_revision(revision)
+# Exact platform format — upload directly
 ```
 
-## Handling Different Question Types
+## Pipeline Strategy Skills
+The `improve_question()` call runs `ImprovementPipeline` which invokes
+these IronClaw skills in order:
 
-### mc-block
-- Choices reference code line ranges (`start`, `end`)
-- If code changes, line numbers in choices may need updating
-- The LLM is instructed to preserve line count when possible
+1. **classify_feedback** → which strategies to apply
+2. **fix_code** / **fix_answer** / **fix_stem** / **fix_choices** /
+   **fix_scenario** / **fix_distractors** → targeted changes via tools
+3. **assemble_and_export** → validate + changelog + PR + Linear
 
-### mc-code
-- Choices contain inline code snippets
-- If `codeLine` exists, preserve it
-- Code snippets in choices can be revised independently
+Each strategy gets a focused OpenRouter call (~500 tokens) instead of
+one massive prompt. Cheaper and more precise.
 
-### mc-line
-- Choices reference single line numbers
-- If code changes, line references may shift
-
-## Example Feedback Scenarios
-
-### "The correct answer is wrong"
-→ validate_feedback checks the code against all choices
-→ if valid: improve_question updates the answers array
-→ changes_made: ["Changed correct answer from C to B"]
-
-### "Choice A is also a valid answer"
-→ validate_feedback analyzes if A is technically defensible
-→ if valid: improve_question may revise choices to differentiate
-→ changes_made: ["Revised choice A to be clearly incorrect by..."]
-
-### "The code has a syntax error on line 42"
-→ validate_feedback checks the syntax
-→ if valid: improve_question fixes the code
-→ changes_made: ["Fixed syntax error on line 42: ..."]
-
-### "The scenario is unrealistic"
-→ validate_feedback assesses scenario plausibility
-→ if valid: improve_question revises the stem
-→ changes_made: ["Revised scenario to reflect real-world..."]
-
-## Pipeline Skills (IronClaw-native orchestration)
-
-When running as an IronClaw agent, the improvement step is orchestrated
-via targeted strategy skills instead of a single LLM call:
-
-1. **classify_feedback** → determine which strategies apply
-2. **fix_code** / **fix_answer** / **fix_stem** / **fix_choices** / **fix_scenario** / **fix_distractors** → apply targeted changes using `sjqqc.tools`
-3. **assemble_and_export** → validate, build changelog, export platform JSON
-
-Each strategy skill:
-- Declares which fields it's allowed to touch
-- Calls specific tool functions (not raw LLM)
-- Validates after each change via `tools.validate_step()`
-- Produces `FieldChange` records for the changelog
-
-The `ImprovementChangelog` on the `QuestionRevision` tracks every change:
-- Which skill made it
-- What field path changed
-- Old value → new value
-- Whether validation passed
-
-## Error Handling
-- LLM returns no `revised_question` → fall back to original
-- Round-trip validation fails → raise ValueError with details
-- Step validation fails → stop pipeline, report which step broke
-- Low confidence → set `requires_human_review = true`
+## Changelog on the Revision
+```python
+revision.changelog.strategies_used    # ["fix_code", "fix_answer"]
+revision.changelog.total_fields_changed  # 3
+revision.changelog.summary  # {answer_changed: True, code_changed: True, ...}
+revision.changelog.all_steps_valid  # True
+```

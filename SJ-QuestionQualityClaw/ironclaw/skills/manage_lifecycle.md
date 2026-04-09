@@ -1,83 +1,93 @@
-# Skill: Manage Question Lifecycle
+# Skill: Manage Lifecycle
 
 ## When to Use
-Use this skill to orchestrate the full feedback → validation → revision
-pipeline with GitHub and Linear integration.
+Use this skill to run the complete feedback cycle with GitHub and Linear
+integration. This is the end-to-end orchestration skill.
 
-## Lifecycle State Machine
+## Full Cycle
+
 ```
-active ──→ feedback_received ──→ under_review ──→ updated
-                                      │
-                                      ├──→ revision ──→ under_review (loop)
-                                      │
-                                      └──→ rejected (feedback invalid)
+1. Read question from GitHub
+2. Create Linear ticket for feedback
+3. Validate feedback (OpenRouter)
+4. Post validation to Linear
+5. If valid: run pipeline (classify → fix strategies → assemble)
+6. Create GitHub PR with revised question
+7. Post revision + PR link to Linear
+8. Update Linear ticket state → Done
 ```
 
-## Operations
+## Step-by-Step
 
-### 1. Receive Feedback
-Trigger: human comment arrives on a question
-
+### 1. Load question
 ```python
-question = AssessmentQuestion(**json.load(open("question.json")))
-feedback = FeedbackComment(
-    question_path=question.path,
-    comment="The correct answer should be B, not C",
-    author="reviewer-name",
-)
-question.state = QuestionState.FEEDBACK_RECEIVED
+ghub = GitHubQuestionClient()
+question = ghub.get_question("questions/path/to/question.json")
 ```
+If the question path is known from feedback context, use it directly.
+For batch operations, use `ghub.list_questions("questions/secure-coding")`.
 
-### 2. Process Feedback (validate + improve)
+### 2. Create Linear ticket
+```python
+linear = LinearClient()
+ticket_id = await linear.create_feedback_ticket(question, feedback)
+```
+Ticket starts in **Triage** state with question details + feedback text.
+
+### 3. Validate feedback
 ```python
 reviewer = QuestionReviewer()
-validation, revision = await reviewer.process_feedback(question, feedback)
+validation = await reviewer.validate_feedback(question, feedback)
+await linear.post_validation(ticket_id, validation)
+```
+Linear gets a comment with: verdict, confidence, reasoning, suggested action.
 
-question.state = QuestionState.UNDER_REVIEW
+### 4. Decision routing
+```
+if validation.verdict in ("valid", "partially_valid"):
+    → proceed to improvement pipeline
+    → Linear state: UNDER_REVIEW
 
-if validation.verdict in ("valid", "partially_valid") and revision:
-    # Export platform-ready JSON
-    updated_json = QuestionReviewer.export_revision(revision)
+if validation.verdict == "invalid":
+    → no changes
+    → Linear comment: "Feedback is incorrect: {reasoning}"
+    → Linear state: ACTIVE (back to normal)
 
-    # GitHub: create PR with revised question
-    ghub = GitHubQuestionClient()
-    pr_url = ghub.update_question_pr(revision.revised)
-
-    # Linear: update ticket + post results
-    linear = LinearClient()
-    await linear.update_ticket_state(ticket_id, QuestionState.UPDATED)
-
-    question.state = QuestionState.UPDATED
-
-elif validation.requires_human_review:
-    # Escalate — don't auto-modify
-    question.state = QuestionState.UNDER_REVIEW
-
-else:
-    # Feedback is invalid — no changes
-    question.state = QuestionState.ACTIVE
+if validation.requires_human_review:
+    → create GitHub issue for human review
+    → Linear comment: "Escalated for human review"
+    → Linear state: UNDER_REVIEW (await human)
 ```
 
-### 3. Export Updated Question
+### 5. Run pipeline + create PR
 ```python
-# The revised question in exact platform format
+revision = await reviewer.improve_question(question, feedback, validation)
+pr_url = ghub.create_revision_pr(revision)
+await linear.post_revision(ticket_id, revision, pr_url=pr_url)
+await linear.update_state(ticket_id, QuestionState.UPDATED)
+```
+The PR contains:
+- Revised question in exact platform JSON format
+- Changelog summary (strategies used, fields changed)
+- Link back to the Linear ticket
+
+### 6. Export for upload
+```python
 json_str = QuestionReviewer.export_revision(revision)
-
-# Write to file (same format as original, uploadable as-is)
-with open("updated_question.json", "w") as f:
-    f.write(json_str)
+# This string is the exact platform format — upload directly
 ```
 
-### 4. Quality Audit (batch)
+## Escalation Path
+When `validation.requires_human_review` is true:
 ```python
-questions = [AssessmentQuestion(**json.load(open(f))) for f in files]
-results = [await reviewer.quality_check(q) for q in questions]
+issue_url = ghub.create_feedback_issue(question, feedback, validation)
+await linear.post_escalation(ticket_id, f"See: {issue_url}")
 ```
 
-## Audit Trail
-Every operation appends to `QuestionAuditTrail`:
-- `feedback_received` — when comment arrives
-- `validation_complete` — verdict + confidence
-- `revision_created` — changes made
-- `human_review_requested` — when escalated
-- `question_updated` — when uploaded back
+## Batch Processing
+```python
+questions = ghub.list_questions("questions/secure-coding/ruby")
+for q in questions:
+    result = await reviewer.quality_check(q)
+    # result has overall_score, issues_found, verdict
+```

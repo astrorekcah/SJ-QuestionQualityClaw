@@ -1,22 +1,38 @@
-"""GitHub integration — manage questions as structured files in a repo."""
+"""GitHub integration for assessment questions.
+
+Questions are stored as platform JSON files in a GitHub repo, organized by
+their path field. The client reads questions, creates PRs for revisions,
+and opens issues for quality flags.
+
+Typical flow:
+  1. Read question from repo by path
+  2. Pipeline processes feedback → produces revision
+  3. Create PR with the revised platform JSON
+  4. Link PR to Linear ticket
+"""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 
 from github import Auth, Github, GithubException
 from loguru import logger
 
-from sjqqc.models import Question
+from sjqqc.models import (
+    AssessmentQuestion,
+    FeedbackComment,
+    FeedbackValidation,
+    QuestionRevision,
+)
+from sjqqc.tools import export_platform_json
 
 
 class GitHubQuestionClient:
     """Read/write assessment questions in a GitHub repository.
 
-    Questions are stored as JSON files under `questions/<domain>/<id>.json`.
-    Changes go through PRs for review tracking.
+    Questions are stored as platform JSON files at their path:
+      `questions/<path-segments>/<question_id>.json`
     """
 
     def __init__(
@@ -27,8 +43,12 @@ class GitHubQuestionClient:
         repo_name: str | None = None,
     ) -> None:
         self.token = token or os.environ.get("GITHUB_TOKEN", "")
-        self.repo_owner = repo_owner or os.environ.get("GITHUB_REPO_OWNER", "astrorekcah")
-        self.repo_name = repo_name or os.environ.get("GITHUB_REPO_NAME", "sj-question-bank")
+        self.repo_owner = repo_owner or os.environ.get(
+            "GITHUB_REPO_OWNER", "astrorekcah"
+        )
+        self.repo_name = repo_name or os.environ.get(
+            "GITHUB_REPO_NAME", "sj-question-bank"
+        )
         self._gh: Github | None = None
 
     @property
@@ -41,70 +61,73 @@ class GitHubQuestionClient:
     def repo(self):
         return self.gh.get_repo(f"{self.repo_owner}/{self.repo_name}")
 
-    def _question_path(self, question: Question) -> str:
-        """Compute the file path for a question in the repo."""
-        return f"questions/{question.domain}/{question.id}.json"
-
     # ------------------------------------------------------------------
-    # Read operations
+    # Read
     # ------------------------------------------------------------------
 
-    def get_question(self, question_id: str, domain: str = "general") -> Question | None:
-        """Fetch a question from the repo by ID."""
-        path = f"questions/{domain}/{question_id}.json"
+    def get_question(self, file_path: str) -> AssessmentQuestion | None:
+        """Fetch a question from the repo by file path."""
         try:
-            contents = self.repo.get_contents(path)
+            contents = self.repo.get_contents(file_path)
             data = json.loads(contents.decoded_content.decode())
-            return Question(**data)
+            return AssessmentQuestion(**data)
         except GithubException as exc:
             if exc.status == 404:
-                logger.debug("Question {} not found at {}", question_id, path)
+                logger.debug("Question not found at {}", file_path)
                 return None
             raise
 
-    def list_questions(self, domain: str = "general") -> list[Question]:
-        """List all questions in a domain directory."""
-        questions: list[Question] = []
+    def list_questions(self, directory: str = "questions") -> list[AssessmentQuestion]:
+        """Recursively list all question JSON files under a directory."""
+        questions: list[AssessmentQuestion] = []
         try:
-            contents = self.repo.get_contents(f"questions/{domain}")
-            for item in contents:
-                if item.name.endswith(".json"):
-                    data = json.loads(item.decoded_content.decode())
-                    questions.append(Question(**data))
+            self._walk_dir(directory, questions)
         except GithubException as exc:
             if exc.status == 404:
-                logger.info("No questions directory for domain '{}'", domain)
-                return []
-            raise
+                logger.info("Directory '{}' not found", directory)
+            else:
+                raise
         return questions
 
-    def list_domains(self) -> list[str]:
-        """List all domain directories in the questions folder."""
-        try:
-            contents = self.repo.get_contents("questions")
-            return [item.name for item in contents if item.type == "dir"]
-        except GithubException:
-            return []
+    def _walk_dir(
+        self, path: str, out: list[AssessmentQuestion]
+    ) -> None:
+        contents = self.repo.get_contents(path)
+        if not isinstance(contents, list):
+            contents = [contents]
+        for item in contents:
+            if item.type == "dir":
+                self._walk_dir(item.path, out)
+            elif item.name.endswith(".json"):
+                try:
+                    data = json.loads(item.decoded_content.decode())
+                    out.append(AssessmentQuestion(**data))
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to parse {}: {}", item.path, exc
+                    )
 
     # ------------------------------------------------------------------
-    # Write operations (via PRs)
+    # Write (via PRs)
     # ------------------------------------------------------------------
 
-    def create_question_pr(
+    def create_revision_pr(
         self,
-        question: Question,
+        revision: QuestionRevision,
         *,
         base_branch: str = "main",
     ) -> str:
-        """Create a PR to add a new question to the repo.
+        """Create a PR with the revised question in platform JSON format.
 
         Returns the PR URL.
         """
-        branch_name = f"question/{question.id}"
-        file_path = self._question_path(question)
-        content = question.model_dump_json(indent=2)
+        q = revision.revised
+        qid = q.question_id
+        branch_name = f"fix/{qid}"
+        file_path = f"questions/{q.path}.json"
+        content = export_platform_json(q)
 
-        # Create branch from base
+        # Create branch
         base_ref = self.repo.get_git_ref(f"heads/{base_branch}")
         try:
             self.repo.create_git_ref(
@@ -112,17 +135,16 @@ class GitHubQuestionClient:
                 sha=base_ref.object.sha,
             )
         except GithubException as exc:
-            if exc.status == 422:  # Branch already exists
-                logger.warning("Branch {} already exists, updating", branch_name)
-            else:
+            if exc.status != 422:  # 422 = already exists
                 raise
+            logger.info("Branch {} already exists", branch_name)
 
-        # Create or update file on branch
+        # Create or update file
         try:
             existing = self.repo.get_contents(file_path, ref=branch_name)
             self.repo.update_file(
                 file_path,
-                message=f"Update question: {question.title}",
+                message=self._commit_message(revision),
                 content=content,
                 sha=existing.sha,
                 branch=branch_name,
@@ -130,119 +152,109 @@ class GitHubQuestionClient:
         except GithubException:
             self.repo.create_file(
                 file_path,
-                message=f"Add question: {question.title}",
+                message=self._commit_message(revision),
                 content=content,
                 branch=branch_name,
             )
 
-        # Create PR
         pr = self.repo.create_pull(
-            title=f"[Question] {question.title}",
-            body=self._pr_body(question),
+            title=f"[Fix] {q.title}",
+            body=self._pr_body(revision),
             head=branch_name,
             base=base_branch,
         )
 
-        logger.info("Created PR #{} for question {}", pr.number, question.id)
-        return pr.html_url
-
-    def update_question_pr(
-        self,
-        question: Question,
-        *,
-        base_branch: str = "main",
-    ) -> str:
-        """Create a PR to update an existing question.
-
-        Returns the PR URL.
-        """
-        branch_name = f"question/{question.id}-update"
-        file_path = self._question_path(question)
-        content = question.model_dump_json(indent=2)
-
-        base_ref = self.repo.get_git_ref(f"heads/{base_branch}")
-        with contextlib.suppress(GithubException):
-            self.repo.create_git_ref(
-                ref=f"refs/heads/{branch_name}",
-                sha=base_ref.object.sha,
-            )
-
-        existing = self.repo.get_contents(file_path, ref=branch_name)
-        self.repo.update_file(
-            file_path,
-            message=f"Revise question: {question.title}",
-            content=content,
-            sha=existing.sha,
-            branch=branch_name,
-        )
-
-        pr = self.repo.create_pull(
-            title=f"[Revision] {question.title}",
-            body=self._pr_body(question, is_revision=True),
-            head=branch_name,
-            base=base_branch,
-        )
-
-        logger.info("Created revision PR #{} for question {}", pr.number, question.id)
+        logger.info("Created PR #{} for {}", pr.number, qid)
         return pr.html_url
 
     # ------------------------------------------------------------------
     # Issues
     # ------------------------------------------------------------------
 
-    def create_quality_issue(
+    def create_feedback_issue(
         self,
-        question: Question,
-        issues: list[str],
+        question: AssessmentQuestion,
+        feedback: FeedbackComment,
+        validation: FeedbackValidation,
     ) -> str:
-        """Open a GitHub issue for quality problems on a question.
+        """Open a GitHub issue for feedback that needs human review.
 
         Returns the issue URL.
         """
-        body_lines = [
-            f"## Quality Issues: {question.title}",
-            f"**Question ID**: `{question.id}`",
-            f"**Domain**: {question.domain}",
-            f"**State**: {question.state}",
-            "",
-            "### Issues Found",
-        ]
-        for issue in issues:
-            body_lines.append(f"- {issue}")
-
         issue = self.repo.create_issue(
-            title=f"[Quality] {question.title}",
-            body="\n".join(body_lines),
-            labels=["quality-review", question.domain],
+            title=f"[Review] {question.title}",
+            body=self._issue_body(question, feedback, validation),
+            labels=["feedback-review", question.language],
         )
-
-        logger.info("Created quality issue #{} for question {}", issue.number, question.id)
+        logger.info("Created issue #{} for {}", issue.number, question.question_id)
         return issue.html_url
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Formatters
     # ------------------------------------------------------------------
 
-    def _pr_body(self, question: Question, *, is_revision: bool = False) -> str:
-        action = "Revision of" if is_revision else "New"
+    def _commit_message(self, revision: QuestionRevision) -> str:
+        changes = "; ".join(revision.changes_made[:3])
+        return f"fix({revision.revised.question_id}): {changes}"
+
+    def _pr_body(self, revision: QuestionRevision) -> str:
+        q = revision.revised
+        cl = revision.changelog
+        lines = [
+            f"## Question Revision: {q.title}",
+            f"**Path**: `{q.path}`",
+            f"**Language**: {q.language}",
+            f"**Type**: {q.prompt.typeId}",
+            "",
+            "### Feedback",
+            f"> {revision.feedback_id}",
+            "",
+            "### Changes",
+        ]
+        for change in revision.changes_made:
+            lines.append(f"- {change}")
+        lines.append(f"\n**Rationale**: {revision.rationale}")
+
+        if cl:
+            lines.append("\n### Changelog Summary")
+            summary = cl.summary
+            for area, changed in summary.items():
+                lines.append(
+                    f"- {area}: {'changed' if changed else 'unchanged'}"
+                )
+            lines.append(f"- Strategies: {', '.join(cl.strategies_used)}")
+            lines.append(f"- Fields changed: {cl.total_fields_changed}")
+
+        lines.append("\n---\n*Generated by SJ-QuestionQualityClaw*")
+        return "\n".join(lines)
+
+    def _issue_body(
+        self,
+        question: AssessmentQuestion,
+        feedback: FeedbackComment,
+        validation: FeedbackValidation,
+    ) -> str:
         return "\n".join([
-            f"## {action} Assessment Question",
+            f"## Feedback Review: {question.title}",
+            f"**Path**: `{question.path}`",
+            f"**Language**: {question.language}",
+            f"**Answer**: {question.correct_answer_key}",
             "",
-            f"**Title**: {question.title}",
-            f"**Type**: {question.question_type.value}",
-            f"**Difficulty**: {question.difficulty.value}",
-            f"**Domain**: {question.domain}",
-            f"**Tags**: {', '.join(question.tags) or 'none'}",
+            "### Feedback",
+            f"> {feedback.comment}",
+            f"**Author**: {feedback.author}",
             "",
-            "### Question",
-            question.body,
+            "### Validation",
+            f"**Verdict**: {validation.verdict}",
+            f"**Confidence**: {validation.confidence:.0%}",
+            f"**Reasoning**: {validation.reasoning}",
+            f"**Requires human review**: {validation.requires_human_review}",
             "",
             "---",
             "*Created by SJ-QuestionQualityClaw*",
         ])
 
     def close(self) -> None:
-        """Close the GitHub connection."""
         if self._gh:
             self._gh.close()
             self._gh = None
