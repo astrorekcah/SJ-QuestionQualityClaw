@@ -1,0 +1,140 @@
+{
+  "path": "secure-coding/data-processing-issues/deserialization-of-untrusted-data/sc-dp-Go-502-2",
+  "title": "(Go) Data Processing Issues | Deserialization of Untrusted Data",
+  "parameters": {
+    "programmingLanguage": [
+      "go"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-code",
+    "configuration": {
+      "prompt": "In this Go-based GitOps controller for Kubernetes, the system manages infrastructure-as-code deployments by processing serialized manifests from Git repositories. The controller needs to deserialize and apply these configurations across multiple clusters. The vulnerability has been identified  choose the secure implementation to fix the vulnerability.",
+      "code": [
+        "package controller",
+        "",
+        "import (",
+        "    \"bytes\"",
+        "    \"encoding/gob\"",
+        "    \"fmt\"",
+        "    \"github.com/go-git/go-git/v5\"",
+        "    \"k8s.io/client-go/kubernetes\"",
+        "    \"k8s.io/client-go/rest\"",
+        "    \"go.uber.org/zap\"",
+        "    \"context\"",
+        ")",
+        "",
+        "type ManifestController struct {",
+        "    kubeClient  *kubernetes.Clientset",
+        "    logger      *zap.SugaredLogger",
+        "    config      *rest.Config",
+        "}",
+        "",
+        "type DeploymentManifest struct {",
+        "    Name       string",
+        "    Namespace  string",
+        "    Resources  map[string]interface{}",
+        "    Variables  map[string]string",
+        "}",
+        "",
+        "func NewManifestController(config *rest.Config) (*ManifestController, error) {",
+        "    clientset, err := kubernetes.NewForConfig(config)",
+        "    if err != nil {",
+        "        return nil, fmt.Errorf(\"failed to create kubernetes client: %v\", err)",
+        "    }",
+        "",
+        "    logger, _ := zap.NewProduction()",
+        "    sugar := logger.Sugar()",
+        "",
+        "    return &ManifestController{",
+        "        kubeClient: clientset,",
+        "        logger:     sugar,",
+        "        config:     config,",
+        "    }, nil",
+        "}",
+        "",
+        "func (c *ManifestController) ProcessManifest(ctx context.Context, data []byte) error {",
+        "    c.logger.Infow(\"Processing deployment manifest\",",
+        "        \"size\", len(data),",
+        "    )",
+        "",
+        "    var manifest DeploymentManifest",
+        "    decoder := gob.NewDecoder(bytes.NewReader(data))",
+        "    if err := decoder.Decode(&manifest); err != nil {",
+        "        return fmt.Errorf(\"failed to decode manifest: %v\", err)",
+        "    }",
+        "",
+        "    if err := c.validateManifest(&manifest); err != nil {",
+        "        return fmt.Errorf(\"invalid manifest: %v\", err)",
+        "    }",
+        "",
+        "    if err := c.applyManifest(ctx, &manifest); err != nil {",
+        "        return fmt.Errorf(\"failed to apply manifest: %v\", err)",
+        "    }",
+        "",
+        "    c.logger.Infow(\"Successfully applied manifest\",",
+        "        \"name\", manifest.Name,",
+        "        \"namespace\", manifest.Namespace,",
+        "    )",
+        "",
+        "    return nil",
+        "}",
+        "",
+        "func (c *ManifestController) validateManifest(manifest *DeploymentManifest) error {",
+        "    if manifest.Name == \"\" || manifest.Namespace == \"\" {",
+        "        return fmt.Errorf(\"name and namespace are required\")",
+        "    }",
+        "",
+        "    if len(manifest.Resources) == 0 {",
+        "        return fmt.Errorf(\"no resources defined in manifest\")",
+        "    }",
+        "",
+        "    return nil",
+        "}",
+        "",
+        "func (c *ManifestController) applyManifest(ctx context.Context, manifest *DeploymentManifest) error {",
+        "    // Apply resources to cluster",
+        "    for name, resource := range manifest.Resources {",
+        "        if err := c.applyResource(ctx, name, resource); err != nil {",
+        "            return err",
+        "        }",
+        "    }",
+        "",
+        "    return nil",
+        "}"
+      ],
+      "codeLine": 49,
+      "choices": [
+        {
+          "key": "a",
+          "code": [
+            "    decoder := gob.NewDecoder(bytes.NewReader(data))"
+          ]
+        },
+        {
+          "key": "b",
+          "code": [
+            "    if err := decoder.Decode(&manifest); err != nil {"
+          ]
+        },
+        {
+          "key": "c",
+          "code": [
+            "    if err := c.validateManifest(&manifest); err != nil {"
+          ]
+        },
+        {
+          "key": "d",
+          "code": [
+            "    if err := c.applyManifest(ctx, &manifest); err != nil {"
+          ]
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "b"
+    }
+  ]
+}

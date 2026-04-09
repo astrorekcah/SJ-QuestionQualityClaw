@@ -1,0 +1,34 @@
+{
+  "path": "ai-llm/core-security/core-security/ai-cs-4",
+  "title": "AI/LLM Core Security | Retrieval Augmentation Generation (RAG) Implementation",
+  "parameters": {},
+  "prompt": {
+    "typeId": "mc-generic",
+    "configuration": {
+      "prompt": "A scientific research company is implementing Retrieval Augmented Generation (RAG) to enhance their pre-trained Large Language Model with specific company documentation. What is the primary benefit of implementing RAG in this scenario?",
+      "choices": [
+        {
+          "key": "a",
+          "choice": "RAG benefits by enhancing pre-trained models with specific information while maintaining base capabilities."
+        },
+        {
+          "key": "b",
+          "choice": "RAG benefits by replacing pre-trained models by creating entirely new model architectures."
+        },
+        {
+          "key": "c",
+          "choice": "RAG benefits by translating content between different programming languages and frameworks automatically."
+        },
+        {
+          "key": "d",
+          "choice": "RAG benefits by providing encryption and security features for protecting sensitive model information."
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "a"
+    }
+  ]
+}

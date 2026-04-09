@@ -319,8 +319,13 @@ class ImprovementPipeline:
                 )
             elif type_id == "mc-code":
                 user_prompt += (
-                    '\n**Choice structure**: mc-code — each choice MUST have '
+                    '\n**Choice structure**: mc-code \u2014 each choice MUST have '
                     '{"key": "x", "code": ["line1", ...]} (code array)\n'
+                )
+            elif type_id == "mc-generic":
+                user_prompt += (
+                    '\n**Choice structure**: mc-generic \u2014 each choice MUST have '
+                    '{"key": "x", "choice": "<text>"} (text string)\n'
                 )
 
         parsed = await self.llm.chat(system, user_prompt)

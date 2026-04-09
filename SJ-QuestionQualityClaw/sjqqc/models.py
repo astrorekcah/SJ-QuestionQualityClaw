@@ -25,6 +25,7 @@ class PromptType(StrEnum):
     MC_BLOCK = "mc-block"
     MC_CODE = "mc-code"
     MC_LINE = "mc-line"
+    MC_GENERIC = "mc-generic"
 
 
 class FeedbackVerdict(StrEnum):
@@ -167,6 +168,8 @@ class AssessmentQuestion(BaseModel):
                 return f"Line {line_num}: {line}"
             elif self.prompt_type == PromptType.MC_CODE:
                 return "\n".join(c.get("code", []))
+            elif self.prompt_type == PromptType.MC_GENERIC:
+                return c.get("choice", "")
         return f"Choice {key} (not found)"
 
     def to_platform_json(self) -> dict[str, Any]:

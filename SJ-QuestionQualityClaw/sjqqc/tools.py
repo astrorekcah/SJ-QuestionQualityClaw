@@ -276,8 +276,8 @@ def validate_step(
             f"Answer '{current.correct_answer_key}' not in choices {current.choice_keys()}"
         )
 
-    # Code must be non-empty
-    if not current.prompt.configuration.code:
+    # Code must be non-empty (except mc-generic which has no code)
+    if not current.prompt.configuration.code and current.prompt.typeId != "mc-generic":
         errors.append("code array is empty")
 
     # Choice structure per typeId
@@ -353,3 +353,5 @@ def _validate_choice_structure(prompt_type: PromptType, choice: dict) -> None:
             raise ValueError(f"mc-line choice '{key}' missing choice field")
     elif prompt_type == PromptType.MC_CODE and "code" not in choice:
         raise ValueError(f"mc-code choice '{key}' missing code field")
+    elif prompt_type == PromptType.MC_GENERIC and "choice" not in choice:
+        raise ValueError(f"mc-generic choice '{key}' missing choice field")

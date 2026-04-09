@@ -1,0 +1,128 @@
+{
+  "path": "secure-coding/injection-flaws/code-injection/sc-if-JS-94-2",
+  "title": "(JavaScript) Injection Flaws | Improper Control of Generation of Code ('Code Injection')",
+  "parameters": {
+    "programmingLanguage": [
+      "javascript"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-block",
+    "configuration": {
+      "prompt": "A CI/CD platform's code validation service allows developers to test code snippets before deployment. Despite having authentication, rate limiting, and input validation in place, the security team discovered that attackers could execute arbitrary system commands through the API. Review their Node.js implementation and identify which function introduces the vulnerability.",
+      "code": [
+        "const fastify = require('fastify');",
+        "  const { exec } = require('child_process');",
+        "  const { authenticate } = require('./auth');",
+        "  const { rateLimit } = require('@fastify/rate-limit');",
+        "  const logger = require('./logger');",
+        "  ",
+        "  // Create server with secure defaults",
+        "  const app = fastify({",
+        "    logger: true,",
+        "    trustProxy: false",
+        "  });",
+        "  ",
+        "  // Add rate limiting",
+        "  app.register(rateLimit, {",
+        "    max: 100,",
+        "    timeWindow: '1 hour'",
+        "  });",
+        "  ",
+        "  // Validates user-supplied code before execution",
+        "  function validateCode(code) {",
+        "    // Check basic input properties",
+        "    if (!code || typeof code !== 'string') {",
+        "      throw new Error('Code must be a string');",
+        "    }",
+        "    if (code.length > 1000) {",
+        "      throw new Error('Code exceeds maximum length');",
+        "    }",
+        "",
+        "    // Only allow alphanumeric and basic syntax characters",
+        "    const validSyntax = /^[a-zA-Z0-9\\s\\{\\}\\(\\);\\[\\]\\.\\'\\\"]+$/;",
+        "    if (!validSyntax.test(code)) {",
+        "      throw new Error('Code contains invalid characters');",
+        "    }",
+        "",
+        "    // Block dangerous Node.js APIs",
+        "    const dangerous = ['require', 'process', '__dirname', 'Buffer'];",
+        "    if (dangerous.some(pattern => code.includes(pattern))) {",
+        "      throw new Error('Code contains restricted APIs');",
+        "    }",
+        "  }",
+        "  ",
+        "  // Executes validated code and returns the result",
+        "  async function runCode(code) {",
+        "    // Attempt to run the code with a timeout",
+        "    return new Promise((resolve, reject) => {",
+        "      exec(code, { timeout: 5000 }, (error, stdout, stderr) => {",
+        "        if (error) {",
+        "          logger.error('Execution failed', { error: error.message });",
+        "          return reject(new Error(stderr));",
+        "        }",
+        "        resolve(stdout.trim());",
+        "      });",
+        "    });",
+        "  }",
+        "  ",
+        "  // API endpoint to handle code validation requests",
+        "  app.post('/api/validate', {",
+        "    preHandler: [authenticate],",
+        "    schema: {",
+        "      body: {",
+        "        type: 'object',",
+        "        required: ['code'],",
+        "        properties: {",
+        "          code: { type: 'string' }",
+        "        },",
+        "        additionalProperties: false",
+        "      }",
+        "    },",
+        "    handler: async (request, reply) => {",
+        "      try {",
+        "        const { code } = request.body;",
+        "        ",
+        "        // Run all validations before execution",
+        "        validateCode(code);",
+        "        ",
+        "        // Execute the code and return results",
+        "        const output = await runCode(code);",
+        "        return { success: true, output };",
+        "      } catch (error) {",
+        "        logger.error('Validation failed', { error: error.message });",
+        "        reply.code(400).send({ error: error.message });",
+        "      }",
+        "    }",
+        "  });"
+      ],
+      "choices": [
+        {
+          "key": "a",
+          "start": 22,
+          "end": 28
+        },
+        {
+          "key": "b",
+          "start": 29,
+          "end": 40
+        },
+        {
+          "key": "c",
+          "start": 43,
+          "end": 54
+        },
+        {
+          "key": "d",
+          "start": 69,
+          "end": 74
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "c"
+    }
+  ]
+}

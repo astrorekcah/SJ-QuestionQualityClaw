@@ -1,0 +1,107 @@
+{
+  "path": "secure-coding/server-side-request-forgery/server-side-request-forgery/sc-owp-srf-Go-1",
+  "title": "(Go) Server-Side Request Forgery | Server-Side Request Forgery (SSRF)",
+  "parameters": {
+    "programmingLanguage": [
+      "go"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-code",
+    "configuration": {
+      "prompt": "As a security engineer for CloudProxy, a company that provides secure API gateway services, you're reviewing code in their URL fetching service. The service needs to protect against Server-Side Request Forgery (SSRF) attacks that could allow attackers to access internal services. Identify the line of code that properly defends against SSRF by validating the target URL.",
+      "code": [
+        "  package proxy",
+        "",
+        "  import (",
+        "      \"context\"",
+        "      \"fmt\"",
+        "      \"io\"",
+        "      \"io/ioutil\"",
+        "      \"net/http\"",
+        "      \"net/url\"",
+        "      \"strings\"",
+        "      \"time\"",
+        "  )",
+        "",
+        "  type SafeFetcher struct {",
+        "      allowedHosts []string",
+        "      client       *http.Client",
+        "      logger       Logger",
+        "  }",
+        "",
+        "  type Logger interface {",
+        "      Error(msg string, args ...interface{})",
+        "      Info(msg string, args ...interface{})",
+        "  }",
+        "",
+        "  func (f *SafeFetcher) FetchURL(ctx context.Context, urlStr string) ([]byte, error) {",
+        "      parsedURL, err := url.Parse(urlStr)",
+        "      if err != nil {",
+        "          f.logger.Error(\"Invalid URL format\", \"error\", err)",
+        "          return nil, fmt.Errorf(\"invalid URL: %w\", err)",
+        "      }",
+        "",
+        "      if parsedURL.Host == \"\" {",
+        "          f.logger.Error(\"Empty host\", \"host\", parsedURL.Host)",
+        "          return nil, fmt.Errorf(\"empty host\")",
+        "      }",
+        "",
+        "      req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)",
+        "      if err != nil {",
+        "          return nil, fmt.Errorf(\"failed to create request: %w\", err)",
+        "      }",
+        "",
+        "      resp, err := f.client.Do(req)",
+        "      if err != nil {",
+        "          return nil, err",
+        "      }",
+        "      defer resp.Body.Close()",
+        "",
+        "      return ioutil.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))",
+        "  }",
+        "",
+        "  func (f *SafeFetcher) isAllowedHost(host string) bool {",
+        "      for _, allowed := range f.allowedHosts {",
+        "          if strings.EqualFold(host, allowed) {",
+        "              return true",
+        "          }",
+        "      }",
+        "      return false",
+        "  }"
+      ],
+      "codeLine": 32,
+      "choices": [
+        {
+          "key": "a",
+          "code": [
+            "      if strings.HasPrefix(parsedURL.Host, \\\"localhost\\\") {"
+          ]
+        },
+        {
+          "key": "b",
+          "code": [
+            "      if parsedURL.Scheme != \\\"https\\\" "
+          ]
+        },
+        {
+          "key": "c",
+          "code": [
+            "      if !f.isAllowedHost(parsedURL.Host) {"
+          ]
+        },
+        {
+          "key": "d",
+          "code": [
+            "      f len(parsedURL.Host) > 255 {"
+          ]
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "c"
+    }
+  ]
+}

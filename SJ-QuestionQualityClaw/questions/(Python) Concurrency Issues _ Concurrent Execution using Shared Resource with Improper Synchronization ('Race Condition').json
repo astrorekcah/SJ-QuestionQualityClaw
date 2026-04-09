@@ -1,0 +1,100 @@
+{
+  "path": "secure-coding/concurrency-issues/concurrency-issues/sc-aa-Python-362-3",
+  "title": "(Python) Concurrency Issues | Concurrent Execution using Shared Resource with Improper Synchronization ('Race Condition')",
+  "parameters": {
+    "programmingLanguage": [
+      "python"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-line",
+    "configuration": {
+      "prompt": "During a security review of a major e-commerce platform's inventory management system, you discover code handling concurrent product purchases during a flash sale event. The system processes over 100,000 orders per minute across multiple regions. Which line introduces a race condition vulnerability that could lead to overselling products or inventory inconsistency?",
+      "code": [
+        "from flask import Flask, request, jsonify",
+        "from flask_sqlalchemy import SQLAlchemy",
+        "import logging",
+        "from datetime import datetime",
+        "import threading",
+        "",
+        "app = Flask(__name__)",
+        "db = SQLAlchemy(app)",
+        "logger = logging.getLogger(__name__)",
+        "_inventory_lock = threading.Lock()",
+        "",
+        "",
+        "class Product(db.Model):",
+        "    id = db.Column(db.Integer, primary_key=True)",
+        "    stock_count = db.Column(db.Integer, nullable=False)",
+        "    last_updated = db.Column(db.DateTime)",
+        "    version = db.Column(db.Integer, default=0)",
+        "",
+        "",
+        "class Order(db.Model):",
+        "    id = db.Column(db.Integer, primary_key=True)",
+        "    product_id = db.Column(db.Integer, db.ForeignKey('product.id'))",
+        "    quantity = db.Column(db.Integer, nullable=False)",
+        "    timestamp = db.Column(db.DateTime, default=datetime.utcnow)",
+        "    status = db.Column(db.String(20), default='pending')",
+        "",
+        "",
+        "@app.route('/api/v1/purchase', methods=['POST'])",
+        "def process_purchase():",
+        "    try:",
+        "        quantity = int(request.json['quantity'])",
+        "        product_id = request.json['product_id']",
+        "",
+        "        product = Product.query.get(product_id)",
+        "        if product.stock_count >= quantity:",
+        "            product.stock_count -= quantity",
+        "",
+        "            order = Order(",
+        "                product_id=product_id,",
+        "                quantity=quantity,",
+        "                status='completed'",
+        "            )",
+        "            db.session.add(order)",
+        "            db.session.commit()",
+        "",
+        "            logger.info('Purchase completed', extra={",
+        "                'product_id': product_id,",
+        "                'quantity': quantity,",
+        "                'remaining_stock': product.stock_count,",
+        "                'timestamp': datetime.utcnow().isoformat()",
+        "            })",
+        "            return jsonify({'status': 'success'})",
+        "",
+        "        return jsonify({'error': 'insufficient stock'}), 400",
+        "",
+        "    except Exception as e:",
+        "        logger.error('Purchase failed', exc_info=True)",
+        "        db.session.rollback()",
+        "        return jsonify({'error': 'purchase failed'}), 500",
+        ""
+      ],
+      "choices": [
+        {
+          "key": "a",
+          "choice": 20
+        },
+        {
+          "key": "b",
+          "choice": 35
+        },
+        {
+          "key": "c",
+          "choice": 44
+        },
+        {
+          "key": "d",
+          "choice": 57
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "b"
+    }
+  ]
+}

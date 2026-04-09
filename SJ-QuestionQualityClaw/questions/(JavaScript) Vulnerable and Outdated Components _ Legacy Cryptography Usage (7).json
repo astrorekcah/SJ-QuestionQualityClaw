@@ -1,0 +1,134 @@
+{
+  "path": "secure-coding/vulnerable-and-outdated-components/vulnerable-and-outdated-components/sc-owp-voc-JS-2",
+  "title": "(JavaScript) Vulnerable and Outdated Components | Legacy Cryptography Usage",
+  "parameters": {
+    "programmingLanguage": [
+      "javascript"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-block",
+    "configuration": {
+      "prompt": "As a DevOps security engineer for an e-commerce platform managing millions of customer transactions daily, identify the block of code that contains a vulnerability related to dependency version management that could compromise build pipeline security.",
+      "code": [
+        "  const fs = require('fs');",
+        "  const { execSync } = require('child_process');",
+        "  const path = require('path');",
+        "",
+        "  class BuildPipelineManager {",
+        "      constructor(projectPath) {",
+        "          this.projectPath = projectPath;",
+        "          this.logFile = path.join(projectPath, 'build.log');",
+        "      }",
+        "",
+        "      log(message) {",
+        "          const timestamp = new Date().toISOString();",
+        "          const logEntry = `[${timestamp}] ${message}\\n`;",
+        "          fs.appendFileSync(this.logFile, logEntry);",
+        "          console.log(logEntry.trim());",
+        "      }",
+        "",
+        "      async setupDevelopmentEnvironment() {",
+        "          this.log(\"Setting up development environment...\");",
+        "          ",
+        "          // Installing development tools",
+        "          const devDependencies = [",
+        "              'webpack',",
+        "              'babel-loader',",
+        "              'eslint',",
+        "              'jest',",
+        "              'nodemon'",
+        "          ];",
+        "",
+        "          for (const dep of devDependencies) {",
+        "              try {",
+        "                  this.log(`Installing ${dep}...`);",
+        "                  execSync(`npm install --save-dev ${dep}`, { stdio: 'pipe' });",
+        "              } catch (error) {",
+        "                  this.log(`Failed to install ${dep}: ${error.message}`);",
+        "                  throw error;",
+        "              }",
+        "          }",
+        "      }",
+        "",
+        "      async setupProductionDependencies() {",
+        "          this.log(\"Installing production dependencies with fixed versions...\");",
+        "          ",
+        "          const prodDependencies = [",
+        "              'express@4.18.2',",
+        "              'helmet@6.1.5',",
+        "              'mongoose@7.0.3',",
+        "              'jsonwebtoken@9.0.0'",
+        "          ];",
+        "",
+        "          for (const dep of prodDependencies) {",
+        "              try {",
+        "                  this.log(`Installing ${dep}...`);",
+        "                  execSync(`npm install ${dep}`, { stdio: 'pipe' });",
+        "              } catch (error) {",
+        "                  this.log(`Failed to install ${dep}: ${error.message}`);",
+        "                  throw error;",
+        "              }",
+        "          }",
+        "      }",
+        "",
+        "      async auditDependencies() {",
+        "          this.log(\"Running security audit...\");",
+        "          try {",
+        "              const auditResult = execSync('npm audit --json', { encoding: 'utf8' });",
+        "              const audit = JSON.parse(auditResult);",
+        "              ",
+        "              if (audit.metadata.vulnerabilities.total > 0) {",
+        "                  this.log(`Found ${audit.metadata.vulnerabilities.total} vulnerabilities`);",
+        "                  execSync('npm audit fix', { stdio: 'inherit' });",
+        "              } else {",
+        "                  this.log(\"No vulnerabilities found\");",
+        "              }",
+        "          } catch (error) {",
+        "              this.log(`Audit failed: ${error.message}`);",
+        "          }",
+        "      }",
+        "",
+        "      async generateLockfile() {",
+        "          this.log(\"Generating package-lock.json for reproducible builds...\");",
+        "          try {",
+        "              execSync('npm install --package-lock-only', { stdio: 'pipe' });",
+        "              this.log(\"Lock file generated successfully\");",
+        "          } catch (error) {",
+        "              this.log(`Lock file generation failed: ${error.message}`);",
+        "              throw error;",
+        "          }",
+        "      }",
+        "  }",
+        ""
+      ],
+      "choices": [
+        {
+          "key": "a",
+          "start": 18,
+          "end": 39
+        },
+        {
+          "key": "b",
+          "start": 41,
+          "end": 60
+        },
+        {
+          "key": "c",
+          "start": 62,
+          "end": 77
+        },
+        {
+          "key": "d",
+          "start": 79,
+          "end": 89
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "a"
+    }
+  ]
+}

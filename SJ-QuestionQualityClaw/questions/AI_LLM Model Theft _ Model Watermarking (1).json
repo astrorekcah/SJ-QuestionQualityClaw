@@ -1,0 +1,34 @@
+{
+  "path": "ai-llm/model-theft/model-theft/ai-mt-3",
+  "title": "AI/LLM Model Theft | Model Watermarking",
+  "parameters": {},
+  "prompt": {
+    "typeId": "mc-generic",
+    "configuration": {
+      "prompt": "Many academic institutions worry about students submitting essays written by LLMs. To address this, vendors use watermarking to help schools identify AI-generated content.\nThis technique gives institutions a way to verify authenticity and maintain academic integrity.\nWhy is this watermarking valuable?",
+      "choices": [
+        {
+          "key": "a",
+          "choice": "Improves grammar and citation accuracy"
+        },
+        {
+          "key": "b",
+          "choice": "Simplifies essay formatting for students"
+        },
+        {
+          "key": "c",
+          "choice": "Provides signals to detect AI-generated text"
+        },
+        {
+          "key": "d",
+          "choice": "Reduces costs for server operations"
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "c"
+    }
+  ]
+}
