@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from sjqqc.changelog import build_changelog
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -437,7 +438,13 @@ class QuestionReviewer:
         revised.prompt.typeId = question.prompt.typeId
 
         # Validate round-trip: export and re-parse to catch schema drift
-        _validate_platform_roundtrip(question, revised)
+        from sjqqc.tools import validate_roundtrip
+        validate_roundtrip(question, revised)
+
+        # Build field-level changelog
+        changelog = build_changelog(
+            question, revised, feedback_id=feedback.id
+        )
 
         revision = QuestionRevision(
             question_path=question.path,
@@ -447,12 +454,13 @@ class QuestionReviewer:
             revised=revised,
             changes_made=parsed.get("changes_made", []),
             rationale=parsed.get("rationale", ""),
+            changelog=changelog,
         )
 
         logger.info(
-            "Revision: {} changes — {}",
-            len(revision.changes_made),
-            revision.rationale[:80],
+            "Revision: {} field changes across {} strategies",
+            changelog.total_fields_changed,
+            len(changelog.strategies_used),
         )
         return revision
 

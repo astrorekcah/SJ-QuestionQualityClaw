@@ -248,7 +248,78 @@ class QuestionRevision(BaseModel):
         default="",
         description="Why these changes address the feedback",
     )
+    changelog: ImprovementChangelog | None = Field(
+        default=None,
+        description="Field-level changelog from the pipeline",
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# ---------------------------------------------------------------------------
+# Pipeline changelog models
+# ---------------------------------------------------------------------------
+
+class FieldChange(BaseModel):
+    """A single field-level change made during improvement."""
+
+    field_path: str = Field(description="e.g. prompt.configuration.code[42]")
+    old_value: Any = None
+    new_value: Any = None
+    reason: str = ""
+    strategy: str = Field(default="", description="Which skill made this change")
+    validated: bool = False
+
+
+class StepValidation(BaseModel):
+    """Result of validating a single improvement step."""
+
+    passed: bool = True
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ImprovementStep(BaseModel):
+    """One step in the improvement pipeline."""
+
+    strategy: str = Field(description="Skill name (e.g. fix_answer, fix_code)")
+    fields_changed: list[FieldChange] = Field(default_factory=list)
+    validation: StepValidation = Field(default_factory=StepValidation)
+    notes: str = ""
+
+
+class ImprovementChangelog(BaseModel):
+    """Full changelog for a question improvement run."""
+
+    question_path: str
+    feedback_id: str = ""
+    steps: list[ImprovementStep] = Field(default_factory=list)
+
+    @property
+    def field_changes(self) -> list[FieldChange]:
+        """All field changes flattened from all steps."""
+        return [fc for step in self.steps for fc in step.fields_changed]
+
+    @property
+    def total_fields_changed(self) -> int:
+        return len(self.field_changes)
+
+    @property
+    def all_steps_valid(self) -> bool:
+        return all(s.validation.passed for s in self.steps)
+
+    @property
+    def summary(self) -> dict[str, bool]:
+        paths = {fc.field_path for fc in self.field_changes}
+        return {
+            "answer_changed": any("answers" in p for p in paths),
+            "code_changed": any("code" in p for p in paths),
+            "choices_changed": any("choices" in p for p in paths),
+            "stem_changed": any("prompt" in p and "code" not in p for p in paths),
+        }
+
+    @property
+    def strategies_used(self) -> list[str]:
+        return [s.strategy for s in self.steps]
 
 
 # ---------------------------------------------------------------------------

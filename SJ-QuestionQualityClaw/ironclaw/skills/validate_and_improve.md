@@ -114,7 +114,29 @@ json_str = QuestionReviewer.export_revision(revision)
 → if valid: improve_question revises the stem
 → changes_made: ["Revised scenario to reflect real-world..."]
 
+## Pipeline Skills (IronClaw-native orchestration)
+
+When running as an IronClaw agent, the improvement step is orchestrated
+via targeted strategy skills instead of a single LLM call:
+
+1. **classify_feedback** → determine which strategies apply
+2. **fix_code** / **fix_answer** / **fix_stem** / **fix_choices** / **fix_scenario** / **fix_distractors** → apply targeted changes using `sjqqc.tools`
+3. **assemble_and_export** → validate, build changelog, export platform JSON
+
+Each strategy skill:
+- Declares which fields it's allowed to touch
+- Calls specific tool functions (not raw LLM)
+- Validates after each change via `tools.validate_step()`
+- Produces `FieldChange` records for the changelog
+
+The `ImprovementChangelog` on the `QuestionRevision` tracks every change:
+- Which skill made it
+- What field path changed
+- Old value → new value
+- Whether validation passed
+
 ## Error Handling
 - LLM returns no `revised_question` → fall back to original
 - Round-trip validation fails → raise ValueError with details
+- Step validation fails → stop pipeline, report which step broke
 - Low confidence → set `requires_human_review = true`
