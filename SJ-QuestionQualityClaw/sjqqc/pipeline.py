@@ -152,7 +152,7 @@ class LLMClient:
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.model = model or os.environ.get(
-            "SELECTED_MODEL", "anthropic/claude-sonnet-4-20250514"
+            "SELECTED_MODEL", "anthropic/claude-sonnet-4"
         )
         self.base_url = base_url or "https://openrouter.ai/api/v1"
 
@@ -176,6 +176,7 @@ class LLMClient:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         }
         async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(
@@ -197,12 +198,22 @@ class LLMClient:
         if text.startswith("```"):
             lines = text.split("\n")
             lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            text = "\n".join(lines)
+            text = "\n".join(lines).strip()
+        # Direct parse
         try:
             return json.loads(text)
-        except json.JSONDecodeError as exc:
-            logger.error("LLM response not valid JSON: {}", text[:500])
-            raise ValueError("LLM response not valid JSON") from exc
+        except json.JSONDecodeError:
+            pass
+        # Fallback: find first { ... } block
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        logger.error("LLM response not valid JSON: {}", text[:500])
+        raise ValueError("LLM response not valid JSON")
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +303,25 @@ class ImprovementPipeline:
             f"**Feedback to address**: {feedback.comment}\n"
             f"**Your scope**: {', '.join(strategy['allowed_fields'])} only\n"
         )
+
+        # Add typeId-specific structure hint for choice strategies
+        if strategy_name in ("fix_choices", "fix_distractors"):
+            type_id = question.prompt.typeId
+            if type_id == "mc-block":
+                user_prompt += (
+                    '\n**Choice structure**: mc-block — each choice MUST have '
+                    '{"key": "x", "start": N, "end": N} (line ranges)\n'
+                )
+            elif type_id == "mc-line":
+                user_prompt += (
+                    '\n**Choice structure**: mc-line — each choice MUST have '
+                    '{"key": "x", "choice": N} (line number)\n'
+                )
+            elif type_id == "mc-code":
+                user_prompt += (
+                    '\n**Choice structure**: mc-code — each choice MUST have '
+                    '{"key": "x", "code": ["line1", ...]} (code array)\n'
+                )
 
         parsed = await self.llm.chat(system, user_prompt)
         changes: list[FieldChange] = []

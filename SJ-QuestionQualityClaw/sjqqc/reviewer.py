@@ -165,6 +165,7 @@ class _LLMClient:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         }
 
         async with httpx.AsyncClient(timeout=90.0) as client:
@@ -187,19 +188,33 @@ class _LLMClient:
             raise ValueError("Could not extract LLM content") from exc
 
         text = content.strip()
+
+        # Strip markdown code fences
         if text.startswith("```"):
             lines = text.split("\n")
             lines = [
                 ln for ln in lines
                 if not ln.strip().startswith("```")
             ]
-            text = "\n".join(lines)
+            text = "\n".join(lines).strip()
 
+        # Try direct parse
         try:
             return json.loads(text)
-        except json.JSONDecodeError as exc:
-            logger.error("LLM response not valid JSON: {}", text[:500])
-            raise ValueError("LLM response not valid JSON") from exc
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: find first { ... } block in the text
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        logger.error("LLM response not valid JSON: {}", text[:500])
+        raise ValueError("LLM response not valid JSON")
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +239,7 @@ class QuestionReviewer:
     ) -> None:
         _api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         _model = model or os.environ.get(
-            "SELECTED_MODEL", "anthropic/claude-sonnet-4-20250514"
+            "SELECTED_MODEL", "anthropic/claude-sonnet-4"
         )
         _base_url = base_url or "https://openrouter.ai/api/v1"
         self._llm = _LLMClient(_api_key, _model, _base_url)
