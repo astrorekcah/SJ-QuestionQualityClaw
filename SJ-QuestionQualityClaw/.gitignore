@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+.env
+ironclaw/telegram.wasm
+ironclaw/telegram.capabilities.json
+ironclaw/channels/telegram.wasm

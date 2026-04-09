@@ -1,0 +1,37 @@
+version: "3.8"
+
+# SJ-QuestionQualityClaw Local Development Stack
+# Provides PostgreSQL for question/review persistence.
+#
+# Usage:
+#   docker compose up -d
+#   source .venv/bin/activate
+#   python scripts/run.py
+
+services:
+  postgresql:
+    image: postgres:16-alpine
+    container_name: sjqqc-postgres
+    environment:
+      POSTGRES_USER: sjqqc
+      POSTGRES_PASSWORD: sjqqc
+      POSTGRES_DB: sjqqc_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - sjqqc_pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sjqqc"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - sjqqc-net
+
+volumes:
+  sjqqc_pgdata:
+
+networks:
+  sjqqc-net:
+    driver: bridge
