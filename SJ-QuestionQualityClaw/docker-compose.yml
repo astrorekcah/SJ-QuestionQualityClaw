@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: sjqqc
       POSTGRES_DB: sjqqc_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - sjqqc_pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
