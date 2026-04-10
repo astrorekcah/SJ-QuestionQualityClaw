@@ -13,14 +13,12 @@ that strategy's scope — tools.py does the actual mutation.
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any
 
-import httpx
 from loguru import logger
 
 from sjqqc.changelog import build_changelog
+from sjqqc.llm import LLMClient
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -135,85 +133,6 @@ Rules for ordering:
 You MUST respond with valid JSON:
 {"strategies": ["fix_code", "fix_answer", ...], "reasoning": "<why these strategies>"}
 """
-
-
-# ---------------------------------------------------------------------------
-# LLM Client (shared)
-# ---------------------------------------------------------------------------
-
-class LLMClient:
-    """Async OpenRouter-compatible chat client. Shared across pipeline."""
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        base_url: str | None = None,
-    ) -> None:
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self.model = model or os.environ.get(
-            "SELECTED_MODEL", "anthropic/claude-sonnet-4"
-        )
-        self.base_url = base_url or "https://openrouter.ai/api/v1"
-
-    async def chat(
-        self,
-        system: str,
-        user: str,
-        *,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-    ) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            raw = resp.json()
-        return self._extract_json(raw)
-
-    @staticmethod
-    def _extract_json(raw: dict[str, Any]) -> dict[str, Any]:
-        try:
-            content = raw["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as exc:
-            raise ValueError("Could not extract LLM content") from exc
-        text = content.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            text = "\n".join(lines).strip()
-        # Direct parse
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # Fallback: find first { ... } block
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-        logger.error("LLM response not valid JSON: {}", text[:500])
-        raise ValueError("LLM response not valid JSON")
 
 
 # ---------------------------------------------------------------------------

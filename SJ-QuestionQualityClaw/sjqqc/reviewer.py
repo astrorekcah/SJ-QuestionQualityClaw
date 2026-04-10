@@ -11,13 +11,12 @@ Handles all platform question types: mc-block, mc-code, mc-line.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
-import httpx
 from loguru import logger
 
 from config.quality_baseline import get_baseline
+from sjqqc.llm import LLMClient
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -141,90 +140,6 @@ def _build_quality_check_prompt(q: AssessmentQuestion) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM Client
-# ---------------------------------------------------------------------------
-
-class _LLMClient:
-    """Async wrapper around an OpenRouter-compatible chat API."""
-
-    def __init__(self, api_key: str, model: str, base_url: str) -> None:
-        self.api_key = api_key
-        self.model = model
-        self.base_url = base_url
-
-    async def chat(
-        self,
-        system: str,
-        user: str,
-        *,
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-    ) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            raw = resp.json()
-
-        return self._extract_json(raw)
-
-    @staticmethod
-    def _extract_json(raw: dict[str, Any]) -> dict[str, Any]:
-        try:
-            content = raw["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as exc:
-            logger.error("Unexpected LLM response: {}", raw)
-            raise ValueError("Could not extract LLM content") from exc
-
-        text = content.strip()
-
-        # Strip markdown code fences
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [
-                ln for ln in lines
-                if not ln.strip().startswith("```")
-            ]
-            text = "\n".join(lines).strip()
-
-        # Try direct parse
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # Fallback: find first { ... } block in the text
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-
-        logger.error("LLM response not valid JSON: {}", text[:500])
-        raise ValueError("LLM response not valid JSON")
-
-
-# ---------------------------------------------------------------------------
 # Reviewer Engine
 # ---------------------------------------------------------------------------
 
@@ -244,12 +159,9 @@ class QuestionReviewer:
         model: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        _api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        _model = model or os.environ.get(
-            "SELECTED_MODEL", "anthropic/claude-sonnet-4"
+        self._llm = LLMClient(
+            api_key=api_key, model=model, base_url=base_url
         )
-        _base_url = base_url or "https://openrouter.ai/api/v1"
-        self._llm = _LLMClient(_api_key, _model, _base_url)
 
     @property
     def model(self) -> str:
@@ -320,15 +232,9 @@ class QuestionReviewer:
 
         Only call when validation.verdict is 'valid' or 'partially_valid'.
         """
-        from sjqqc.pipeline import ImprovementPipeline, LLMClient
+        from sjqqc.pipeline import ImprovementPipeline
 
-        pipeline = ImprovementPipeline(
-            llm=LLMClient(
-                api_key=self._llm.api_key,
-                model=self._llm.model,
-                base_url=self._llm.base_url,
-            )
-        )
+        pipeline = ImprovementPipeline(llm=self._llm)
         return await pipeline.run(question, feedback, validation)
 
     # ------------------------------------------------------------------

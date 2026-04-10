@@ -11,3 +11,11 @@ build/
 ironclaw/telegram.wasm
 ironclaw/telegram.capabilities.json
 ironclaw/channels/telegram.wasm
+
+# Generated output
+*_revised.json
+*_exported.json
+*_demo_revised.json
+
+# Keep fixture questions
+!tests/fixtures/*.json

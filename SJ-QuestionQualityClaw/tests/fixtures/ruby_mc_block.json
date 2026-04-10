@@ -9,7 +9,7 @@
   "prompt": {
     "typeId": "mc-block",
     "configuration": {
-      "prompt": "As the chief software engineer for a multinational corporation, you're performing a security audit of a Ruby-based document management system used to manage financial reports, internal strategy plans, and corporate communications. Documents are categorized by access level\u2014public, restricted, and confidential\u2014with specific rules that determine who can access each type.\nThe system uses role-based access control (RBAC), with users assigned roles such as admin, executive, or staff, and document visibility is determined by access level and user role.\nDuring your review, you discover a flaw that may allow users to access documents outside their intended permissions, in violation of the RBAC policy.\nSelect the block of code that contains the logic responsible for this authorization flaw.",
+      "prompt": "As the chief software engineer for a multinational corporation, you're performing a security audit of a Ruby-based document management system used to manage financial reports, internal strategy plans, and corporate communications. Documents are categorized by access level—public, restricted, and confidential—with specific rules that determine who can access each type.\nThe system uses role-based access control (RBAC), with users assigned roles such as admin, executive, or staff, and document visibility is determined by access level and user role.\nDuring your review, you discover a flaw that may allow users to access documents outside their intended permissions, in violation of the RBAC policy.\nSelect the block of code that contains the logic responsible for this authorization flaw.",
       "code": [
         "  require 'sinatra'",
         "  require 'json'",
@@ -145,8 +145,7 @@
           "start": 77,
           "end": 80
         }
-      ],
-      "codeLine": null
+      ]
     }
   },
   "answers": [

@@ -1,0 +1,136 @@
+{
+  "path": "secure-coding/authentication-and-authorization-issues/missing-authentication-for-critical-function/sc-aa-Ruby-306-1",
+  "title": "(Ruby) Authentication and Authorization Issues | Missing Authentication for Critical Function",
+  "parameters": {
+    "programmingLanguage": [
+      "ruby"
+    ]
+  },
+  "prompt": {
+    "typeId": "mc-code",
+    "configuration": {
+      "prompt": "The following Ruby code is part of a secure API gateway that handles authentication for sensitive healthcare data access. The code needs to implement proper authentication using JWT tokens, password hashing, and rate limiting. Identify the block of code that correctly implements secure authentication.\n",
+      "code": [
+        "require 'sinatra'",
+        "require 'jwt'",
+        "require 'bcrypt'",
+        "require 'redis'",
+        "",
+        "class SecureAPIGateway",
+        "  RATE_LIMIT = 100  # requests per hour",
+        "  TOKEN_EXPIRY = 3600  # 1 hour",
+        "",
+        "  def initialize",
+        "    @redis = Redis.new",
+        "    @secret = ENV['JWT_SECRET']",
+        "  end",
+        "",
+        "  def authenticate(credentials)",
+        "    return false if rate_limited?(credentials[:ip])",
+        "",
+        "    user = User.find_by(email: credentials[:email])",
+        "    return false unless user",
+        "",
+        " ",
+        "   if user.authenticate(credentials[:password])",
+        "      token = generate_jwt(user)",
+        "      update_rate_limit(credentials[:ip])",
+        "      { token: token, expiry: Time.now + TOKEN_EXPIRY }",
+        "    else",
+        "      increment_failed_attempts(credentials[:ip])",
+        "      false",
+        "    end",
+        "  end",
+        "",
+        "  private",
+        "",
+        "  def rate_limited?(ip)",
+        "    attempts = @redis.get(\"attempts:#{ip}\").to_i",
+        "    attempts >= RATE_LIMIT",
+        "  end",
+        "",
+        "  def generate_jwt(user)",
+        "    payload = {",
+        "      user_id: user.id,",
+        "      email: user.email,",
+        "      exp: Time.now.to_i + TOKEN_EXPIRY",
+        "    }",
+        "    JWT.encode(payload, @secret, 'HS256')",
+        "  end",
+        "",
+        "  def update_rate_limit(ip)",
+        "    @redis.multi do |multi|",
+        "      multi.incr(\"attempts:#{ip}\")",
+        "      multi.expire(\"attempts:#{ip}\", 3600)",
+        "    end",
+        "  end",
+        "end",
+        "",
+        "# Usage example",
+        "gateway = SecureAPIGateway.new",
+        "result = gateway.authenticate(",
+        "  email: params[:email],",
+        "  password: params[:password],",
+        "  ip: request.ip",
+        ")"
+      ],
+      "codeLine": 21,
+      "choices": [
+        {
+          "key": "a",
+          "code": [
+            "  def handle_login(username, password)",
+            "        session_id = @auth_service.authenticate(username, password)",
+            "        if session_id",
+            "        { status: 'success', session_id: session_id }",
+            "      else",
+            "        { status: 'error', message: 'Invalid credentials' }",
+            "      end",
+            "    end"
+          ]
+        },
+        {
+          "key": "b",
+          "code": [
+            " def get_account_balance(session_id)",
+            "        account_id = @auth_service.get_account_id(session_id)",
+            "        return { error: 'Authentication required' } unless account_id",
+            "      ",
+            "      balance = @auth_service.get_balance(account_id)",
+            "      { balance: balance, account_id: account_id }",
+            "    end"
+          ]
+        },
+        {
+          "key": "c",
+          "code": [
+            " def process_wire_transfer(from_account, to_account, amount)",
+            "        success = @auth_service.transfer_funds(from_account, to_account, amount)",
+            "        if success",
+            "        { status: 'completed', transaction_id: SecureRandom.hex(8) }",
+            "      else",
+            "        { status: 'failed', message: 'Transfer failed' }",
+            "      end",
+            "    end"
+          ]
+        },
+        {
+          "key": "d",
+          "code": [
+            " def validate_session(session_id)",
+            "        return false unless @sessions.key?(session_id)",
+            "      session = @sessions[session_id]",
+            "      return false if Time.now.to_i - session[:created_at] > 1800",
+            "      true",
+            "    end"
+          ]
+        }
+      ]
+    }
+  },
+  "answers": [
+    {
+      "value": "a"
+    }
+  ]
+}
