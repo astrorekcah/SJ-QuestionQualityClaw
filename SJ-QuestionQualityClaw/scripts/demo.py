@@ -41,10 +41,12 @@ QUESTIONS_DIR = Path(__file__).resolve().parent.parent / "questions"
 # Demo feedback for specific question types
 DEMO_FEEDBACK = {
     "mc-block": (
-        "The correct answer should be choice D, not C — after the admin "
-        "check on line 80, the code falls through to line 84 which returns "
-        "the document without any access control for restricted/confidential "
-        "documents accessed by non-admin, non-owner users."
+        "The correct answer should be choice D, not C \u2014 the get_document "
+        "method checks if the user is admin (lines 66-68) but after that "
+        "check, line 70 just returns the document unconditionally for ALL "
+        "other users without verifying the access_level rules defined in "
+        "@access_rules. Non-admin, non-owner users can access restricted "
+        "and confidential documents."
     ),
     "mc-line": (
         "The answer points to the wrong line — the actual vulnerability is "
@@ -134,10 +136,13 @@ async def main() -> None:
     # ── Step 3: Pick a question + feedback ──
     console.print("[bold]Step 3: Select Question + Feedback[/bold]")
 
-    # Pick first mc-block question for demo
+    # Pick the Ruby auth question (best demo — feedback matches the code)
     demo_q = next(
-        (q for q in questions if q.prompt.typeId == "mc-block"),
-        questions[0],
+        (q for q in questions if "Ruby" in q.title and "Incorrect" in q.title),
+        next(
+            (q for q in questions if q.prompt.typeId == "mc-block"),
+            questions[0],
+        ),
     )
     feedback_text = DEMO_FEEDBACK.get(demo_q.prompt.typeId, DEMO_FEEDBACK["mc-block"])
 
