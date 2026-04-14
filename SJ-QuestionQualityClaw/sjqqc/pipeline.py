@@ -18,7 +18,7 @@ from typing import Any
 from loguru import logger
 
 from sjqqc.changelog import build_changelog
-from sjqqc.llm import LLMClient
+from sjqqc.llm import LLMClient, sanitize_prompt_input
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -181,7 +181,7 @@ class ImprovementPipeline:
         """Classify feedback and return ordered list of strategy names."""
         user_prompt = (
             f"{_format_question(question)}\n\n---\n\n"
-            f"**Feedback**: {feedback.comment}\n"
+            f"**Feedback**: {sanitize_prompt_input(feedback.comment)}\n"
         )
         if feedback.target_choice:
             user_prompt += f"**Target choice**: {feedback.target_choice}\n"
@@ -219,7 +219,7 @@ class ImprovementPipeline:
 
         user_prompt = (
             f"{_format_question(question)}\n\n---\n\n"
-            f"**Feedback to address**: {feedback.comment}\n"
+            f"**Feedback to address**: {sanitize_prompt_input(feedback.comment)}\n"
             f"**Your scope**: {', '.join(strategy['allowed_fields'])} only\n"
         )
 

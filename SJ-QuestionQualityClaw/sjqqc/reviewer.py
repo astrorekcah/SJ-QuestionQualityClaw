@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from config.quality_baseline import get_baseline
-from sjqqc.llm import LLMClient
+from sjqqc.llm import LLMClient, sanitize_prompt_input
 from sjqqc.models import (
     AssessmentQuestion,
     FeedbackComment,
@@ -116,7 +116,7 @@ def _build_validate_prompt(
         "---\n\n"
         "## Feedback to Validate\n"
         f"**Author**: {feedback.author}\n"
-        f"**Comment**: {feedback.comment}\n"
+        f"**Comment**: {sanitize_prompt_input(feedback.comment)}\n"
         + (
             f"**Target choice**: {feedback.target_choice}\n"
             if feedback.target_choice else ""

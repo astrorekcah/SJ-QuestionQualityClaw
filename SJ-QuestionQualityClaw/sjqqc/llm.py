@@ -13,9 +13,36 @@ from typing import Any
 import httpx
 from loguru import logger
 
+# Max feedback length to prevent prompt injection via massive payloads
+MAX_PROMPT_LENGTH = 50_000
+
+# Simple rate limiter: max calls per minute
+MAX_CALLS_PER_MINUTE = 30
+
+
+def sanitize_prompt_input(text: str) -> str:
+    """Sanitize user-provided text before embedding in LLM prompts.
+
+    Strips control characters and truncates to prevent prompt injection
+    via oversized payloads.
+    """
+    # Remove null bytes and control chars (keep newlines/tabs)
+    cleaned = "".join(
+        c for c in text
+        if c == "\n" or c == "\t" or (ord(c) >= 32)
+    )
+    # Truncate
+    if len(cleaned) > MAX_PROMPT_LENGTH:
+        cleaned = cleaned[:MAX_PROMPT_LENGTH] + "\n[TRUNCATED]"
+        logger.warning(
+            "Prompt input truncated from {} to {} chars",
+            len(text), MAX_PROMPT_LENGTH,
+        )
+    return cleaned
+
 
 class LLMClient:
-    """OpenRouter chat client with caching and cost tracking."""
+    """OpenRouter chat client with caching, cost tracking, and safety guards."""
 
     def __init__(
         self,
@@ -31,10 +58,17 @@ class LLMClient:
         )
         self.base_url = base_url or "https://openrouter.ai/api/v1"
 
+        # Validate API key
+        if not self.api_key or self.api_key.startswith("{{"):
+            logger.warning(
+                "OPENROUTER_API_KEY not set — LLM calls will fail"
+            )
+
         from sjqqc.cache import CostTracker, ResponseCache
 
         self.cache = ResponseCache() if cache_enabled else None
         self.costs = CostTracker()
+        self._call_timestamps: list[float] = []
 
     async def chat(
         self,
@@ -50,6 +84,16 @@ class LLMClient:
         Responses are cached by default (keyed by model+system+user).
         Set use_cache=False for mutation operations.
         """
+        # Validate API key
+        if not self.api_key or self.api_key.startswith("{{"):
+            raise RuntimeError(
+                "OPENROUTER_API_KEY not configured. "
+                "Set it in .env or pass api_key to LLMClient."
+            )
+
+        # Rate limit
+        self._enforce_rate_limit()
+
         # Check cache
         if use_cache and self.cache:
             cached = self.cache.get(self.model, system, user)
@@ -102,6 +146,25 @@ class LLMClient:
             self.cache.put(self.model, system, user, result)
 
         return result
+
+    def _enforce_rate_limit(self) -> None:
+        """Simple sliding-window rate limiter."""
+        import time
+
+        now = time.time()
+        # Remove timestamps older than 60s
+        self._call_timestamps = [
+            t for t in self._call_timestamps if now - t < 60
+        ]
+        if len(self._call_timestamps) >= MAX_CALLS_PER_MINUTE:
+            logger.warning(
+                "Rate limit: {} calls in last 60s (max {})",
+                len(self._call_timestamps), MAX_CALLS_PER_MINUTE,
+            )
+            raise RuntimeError(
+                f"Rate limit exceeded: {MAX_CALLS_PER_MINUTE} calls/min"
+            )
+        self._call_timestamps.append(now)
 
     @staticmethod
     def _extract_json(raw: dict[str, Any]) -> dict[str, Any]:
