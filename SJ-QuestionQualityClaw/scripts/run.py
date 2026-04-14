@@ -171,16 +171,39 @@ async def cmd_quality(question_path: str) -> None:
     verdict = result.get("verdict", "unknown")
     console.print(f"\n[bold]{verdict.upper()}[/bold] ({score}/10)")
 
-    for dim in (
-        "technical_accuracy", "stem_clarity", "choice_quality",
-        "code_quality", "difficulty_calibration",
-    ):
-        d = result.get(dim, {})
-        if isinstance(d, dict):
-            console.print(
-                f"  {dim}: {d.get('score', '?')}/10 — "
-                f"{d.get('notes', '')[:80]}"
-            )
+    # Handle new format: {"dimensions": {"name": {"score", "notes"}}}
+    dimensions = result.get("dimensions", {})
+    if isinstance(dimensions, dict) and dimensions:
+        from config.quality_baseline import get_baseline
+
+        baseline = get_baseline(question.prompt.typeId)
+        for dim in baseline.dimensions:
+            d = dimensions.get(dim.name, {})
+            if isinstance(d, dict):
+                dim_score = d.get("score", "?")
+                notes = d.get("notes", "")
+                passed = (
+                    isinstance(dim_score, (int, float))
+                    and dim_score >= dim.pass_threshold
+                )
+                icon = "✅" if passed else "❌"
+                console.print(
+                    f"  {icon} {dim.name}: {dim_score}/10 "
+                    f"(pass ≥{dim.pass_threshold}) — "
+                    f"{notes[:70]}"
+                )
+    else:
+        # Fallback: old flat format
+        for dim in (
+            "technical_accuracy", "stem_clarity", "choice_quality",
+            "code_quality", "difficulty_calibration",
+        ):
+            d = result.get(dim, {})
+            if isinstance(d, dict):
+                console.print(
+                    f"  {dim}: {d.get('score', '?')}/10 — "
+                    f"{d.get('notes', '')[:80]}"
+                )
 
     issues = result.get("issues_found", [])
     if issues:
