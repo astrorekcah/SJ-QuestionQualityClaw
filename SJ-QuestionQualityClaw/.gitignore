@@ -19,3 +19,4 @@ ironclaw/channels/telegram.wasm
 
 # Keep fixture questions
 !tests/fixtures/*.json
+data/

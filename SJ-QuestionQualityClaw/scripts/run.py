@@ -59,6 +59,11 @@ def cmd_assess() -> None:
 
     report = assess_bank(questions)
 
+    # Record snapshot for trend tracking
+    from sjqqc.improvement import TrendTracker
+
+    TrendTracker().record_from_bank_report(report)
+
     console.print()
     console.print("[bold]Bank Quality Assessment[/bold]")
     console.print(f"  Questions: {report.total_questions}")
@@ -287,6 +292,8 @@ def main() -> None:
         console.print("  export  <file>                   Export platform JSON")
         console.print('  batch-process "feedback"         Process all questions')
         console.print("  telegram                         Start Telegram bot")
+        console.print("  dashboard                        Improvement dashboard")
+        console.print("  verdict <id> agree|disagree      Record verdict accuracy")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -317,6 +324,33 @@ def main() -> None:
         from sjqqc.telegram_bridge import main as telegram_main
 
         asyncio.run(telegram_main())
+    elif cmd == "dashboard":
+        from sjqqc.improvement import improvement_dashboard
+
+        console.print(improvement_dashboard())
+    elif cmd == "verdict":
+        # Record a verdict outcome: verdict <feedback_id> <agree|disagree> [notes]
+        if len(sys.argv) < 4:
+            console.print(
+                '[red]Usage: verdict <feedback_id> agree|disagree [notes][/red]'
+            )
+            sys.exit(1)
+        from sjqqc.improvement import VerdictOutcome, VerdictTracker
+
+        tracker = VerdictTracker()
+        agrees = sys.argv[3].lower() in ("agree", "yes", "y", "true")
+        notes = " ".join(sys.argv[4:]) if len(sys.argv) > 4 else ""
+        tracker.record(VerdictOutcome(
+            feedback_id=sys.argv[2],
+            question_path="",
+            system_verdict="",
+            system_confidence=0.0,
+            human_agrees=agrees,
+            human_notes=notes,
+        ))
+        console.print(
+            f"{'✅ Agreed' if agrees else '❌ Disagreed'} recorded"
+        )
     else:
         console.print(f"[red]Unknown command: {cmd}[/red]")
         sys.exit(1)
