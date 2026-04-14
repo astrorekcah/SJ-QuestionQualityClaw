@@ -5,7 +5,7 @@ Primary workflow:
   2. improve_question()   — Apply validated feedback to produce a revised question
   3. quality_check()      — Independent quality assessment (secondary mode)
 
-Handles all platform question types: mc-block, mc-code, mc-line.
+Handles all platform question types: mc-block, mc-code, mc-line, mc-generic.
 """
 
 from __future__ import annotations

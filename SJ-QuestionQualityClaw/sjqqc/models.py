@@ -1,9 +1,10 @@
 """Domain models — matches the actual platform question schema + feedback workflow.
 
 Platform question types:
-  mc-block: select a block of code (choices reference line ranges)
-  mc-code:  select a code snippet (choices contain inline code)
-  mc-line:  select a single line (choices reference line numbers)
+  mc-block:   select a block of code (choices reference line ranges)
+  mc-code:    select a code snippet (choices contain inline code)
+  mc-line:    select a single line (choices reference line numbers)
+  mc-generic: select a text answer (choices contain text strings, no code)
 """
 
 from __future__ import annotations

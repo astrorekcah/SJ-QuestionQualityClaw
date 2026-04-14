@@ -56,7 +56,7 @@ class LLMConfig:
     backend: str = field(default_factory=lambda: os.environ.get("LLM_BACKEND", "openrouter"))
     model: str = field(
         default_factory=lambda: os.environ.get(
-            "SELECTED_MODEL", "anthropic/claude-sonnet-4-20250514"
+            "SELECTED_MODEL", "anthropic/claude-sonnet-4"
         )
     )
     api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
