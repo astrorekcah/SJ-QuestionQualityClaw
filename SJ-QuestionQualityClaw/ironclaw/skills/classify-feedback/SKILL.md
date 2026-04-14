@@ -1,3 +1,19 @@
+---
+name: classify-feedback
+version: "1.0.0"
+description: Classify feedback into fix strategies: code, answer, stem, choices, scenario, distractors
+activation:
+  keywords:
+    - "classify"
+    - "categorize"
+    - "feedback"
+    - "strategy"
+  tags:
+    - "assessment"
+    - "pipeline"
+  max_context_tokens: 1500
+---
+
 # Skill: Classify Feedback
 
 ## When to Use

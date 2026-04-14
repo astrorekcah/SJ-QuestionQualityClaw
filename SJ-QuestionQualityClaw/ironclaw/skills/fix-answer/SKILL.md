@@ -1,3 +1,20 @@
+---
+name: fix-answer
+version: "1.0.0"
+description: Correct the marked answer key when feedback indicates it is wrong
+activation:
+  keywords:
+    - "fix answer"
+    - "wrong answer"
+    - "correct answer"
+    - "answer key"
+  tags:
+    - "assessment"
+    - "fix"
+    - "answer"
+  max_context_tokens: 1200
+---
+
 # Skill: Fix Answer
 
 ## When to Use

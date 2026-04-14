@@ -1,3 +1,20 @@
+---
+name: fix-stem
+version: "1.0.0"
+description: Improve question stem clarity or fix technical inaccuracies
+activation:
+  keywords:
+    - "fix stem"
+    - "unclear"
+    - "confusing"
+    - "ambiguous"
+  tags:
+    - "assessment"
+    - "fix"
+    - "stem"
+  max_context_tokens: 1200
+---
+
 # Skill: Fix Stem
 
 ## When to Use

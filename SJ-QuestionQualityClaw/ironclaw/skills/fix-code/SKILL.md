@@ -1,3 +1,20 @@
+---
+name: fix-code
+version: "1.0.0"
+description: Fix code bugs, syntax errors, or logic flaws in assessment question code
+activation:
+  keywords:
+    - "fix code"
+    - "syntax error"
+    - "code bug"
+    - "logic flaw"
+  tags:
+    - "assessment"
+    - "fix"
+    - "code"
+  max_context_tokens: 1500
+---
+
 # Skill: Fix Code
 
 ## When to Use

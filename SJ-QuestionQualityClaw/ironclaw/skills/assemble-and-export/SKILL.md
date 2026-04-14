@@ -1,3 +1,20 @@
+---
+name: assemble-and-export
+version: "1.0.0"
+description: Assemble pipeline results, validate round-trip, build changelog, export platform JSON
+activation:
+  keywords:
+    - "assemble"
+    - "export"
+    - "changelog"
+    - "platform json"
+  tags:
+    - "assessment"
+    - "pipeline"
+    - "export"
+  max_context_tokens: 1000
+---
+
 # Skill: Assemble & Export
 
 ## When to Use

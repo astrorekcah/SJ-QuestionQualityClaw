@@ -1,3 +1,19 @@
+---
+name: fix-scenario
+version: "1.0.0"
+description: Rewrite unrealistic or contrived scenarios in question stems
+activation:
+  keywords:
+    - "fix scenario"
+    - "unrealistic"
+    - "contrived"
+  tags:
+    - "assessment"
+    - "fix"
+    - "scenario"
+  max_context_tokens: 1200
+---
+
 # Skill: Fix Scenario
 
 ## When to Use

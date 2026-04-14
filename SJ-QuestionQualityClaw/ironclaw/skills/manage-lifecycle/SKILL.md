@@ -1,3 +1,21 @@
+---
+name: manage-lifecycle
+version: "1.0.0"
+description: Orchestrate the full feedback cycle with GitHub PRs and Linear tickets
+activation:
+  keywords:
+    - "lifecycle"
+    - "github"
+    - "linear"
+    - "PR"
+    - "ticket"
+  tags:
+    - "assessment"
+    - "integration"
+    - "lifecycle"
+  max_context_tokens: 1500
+---
+
 # Skill: Manage Lifecycle
 
 ## When to Use

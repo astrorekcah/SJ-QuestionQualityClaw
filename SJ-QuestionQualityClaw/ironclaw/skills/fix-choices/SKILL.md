@@ -1,3 +1,20 @@
+---
+name: fix-choices
+version: "1.0.0"
+description: Revise choice content for assessment questions
+activation:
+  keywords:
+    - "fix choices"
+    - "choice wrong"
+    - "also correct"
+    - "ambiguous choice"
+  tags:
+    - "assessment"
+    - "fix"
+    - "choices"
+  max_context_tokens: 1200
+---
+
 # Skill: Fix Choices
 
 ## When to Use

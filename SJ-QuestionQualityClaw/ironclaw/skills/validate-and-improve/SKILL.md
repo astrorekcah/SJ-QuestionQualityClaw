@@ -1,3 +1,22 @@
+---
+name: validate-and-improve
+version: "1.0.0"
+description: Validate learner feedback on assessment questions and improve them via the IronClaw pipeline
+activation:
+  keywords:
+    - "validate"
+    - "feedback"
+    - "improve"
+    - "question"
+    - "assessment"
+    - "fix"
+  tags:
+    - "assessment"
+    - "quality"
+    - "feedback"
+  max_context_tokens: 2000
+---
+
 # Skill: Validate & Improve
 
 ## When to Use

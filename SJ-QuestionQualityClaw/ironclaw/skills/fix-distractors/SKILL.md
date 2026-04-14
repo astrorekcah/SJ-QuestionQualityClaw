@@ -1,3 +1,19 @@
+---
+name: fix-distractors
+version: "1.0.0"
+description: Improve weak wrong choices to be more plausible
+activation:
+  keywords:
+    - "fix distractors"
+    - "too obvious"
+    - "weak choices"
+  tags:
+    - "assessment"
+    - "fix"
+    - "distractors"
+  max_context_tokens: 1200
+---
+
 # Skill: Fix Distractors
 
 ## When to Use
