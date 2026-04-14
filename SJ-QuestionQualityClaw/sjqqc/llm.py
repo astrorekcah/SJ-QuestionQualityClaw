@@ -15,19 +15,26 @@ from loguru import logger
 
 
 class LLMClient:
-    """Async OpenRouter-compatible chat client."""
+    """Async OpenRouter-compatible chat client with caching and cost tracking."""
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
+        *,
+        cache_enabled: bool = True,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.model = model or os.environ.get(
             "SELECTED_MODEL", "anthropic/claude-sonnet-4"
         )
         self.base_url = base_url or "https://openrouter.ai/api/v1"
+
+        from sjqqc.cache import CostTracker, ResponseCache
+
+        self.cache = ResponseCache() if cache_enabled else None
+        self.costs = CostTracker()
 
     async def chat(
         self,
@@ -36,8 +43,24 @@ class LLMClient:
         *,
         temperature: float = 0.3,
         max_tokens: int = 4096,
+        use_cache: bool = True,
     ) -> dict[str, Any]:
-        """Send a chat completion and return parsed JSON."""
+        """Send a chat completion and return parsed JSON.
+
+        Responses are cached by default (keyed by model+system+user).
+        Set use_cache=False for mutation operations.
+        """
+        # Check cache first
+        if use_cache and self.cache:
+            cached = self.cache.get(self.model, system, user)
+            if cached is not None:
+                from sjqqc.cache import CallCost
+
+                self.costs.add(CallCost(
+                    model=self.model, cached=True,
+                ))
+                return cached
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -62,7 +85,25 @@ class LLMClient:
             resp.raise_for_status()
             raw = resp.json()
 
-        return self._extract_json(raw)
+        # Track costs from usage data
+        usage = raw.get("usage", {})
+        if usage:
+            from sjqqc.cache import estimate_cost
+
+            cost = estimate_cost(
+                self.model,
+                usage.get("prompt_tokens", 0),
+                usage.get("completion_tokens", 0),
+            )
+            self.costs.add(cost)
+
+        result = self._extract_json(raw)
+
+        # Cache the result
+        if use_cache and self.cache:
+            self.cache.put(self.model, system, user, result)
+
+        return result
 
     @staticmethod
     def _extract_json(raw: dict[str, Any]) -> dict[str, Any]:

@@ -299,9 +299,41 @@ class QuestionReviewer:
         """End-to-end: validate feedback, then improve if valid.
 
         Returns (validation, revision_or_None).
+        Builds a QuestionAuditTrail as a side effect.
         """
-        validation = await self.validate_feedback(question, feedback)
+        from sjqqc.models import QuestionAuditTrail, ReviewEvent
 
+        trail = QuestionAuditTrail(question_path=question.path)
+
+        # Record feedback received
+        trail.events.append(ReviewEvent(
+            event_type="feedback_received",
+            feedback_id=feedback.id,
+            summary=feedback.comment[:100],
+        ))
+
+        # Validate
+        validation = await self.validate_feedback(question, feedback)
+        trail.events.append(ReviewEvent(
+            event_type="validation_complete",
+            feedback_id=feedback.id,
+            validation_id=validation.id,
+            summary=(
+                f"{validation.verdict} ({validation.confidence:.0%}): "
+                f"{validation.suggested_action}"
+            ),
+        ))
+
+        # Escalate if needed
+        if validation.requires_human_review:
+            trail.events.append(ReviewEvent(
+                event_type="human_review_requested",
+                feedback_id=feedback.id,
+                validation_id=validation.id,
+                summary="Low confidence — human review required",
+            ))
+
+        # Improve if valid
         revision = None
         if auto_improve and validation.verdict in (
             FeedbackVerdict.VALID,
@@ -310,5 +342,20 @@ class QuestionReviewer:
             revision = await self.improve_question(
                 question, feedback, validation
             )
+            trail.events.append(ReviewEvent(
+                event_type="revision_created",
+                feedback_id=feedback.id,
+                validation_id=validation.id,
+                revision_id=revision.id,
+                summary=revision.rationale[:100],
+            ))
+
+        # Log cost summary
+        self._llm.costs.log_summary()
+
+        logger.info(
+            "Audit trail: {} events for {}",
+            len(trail.events), question.question_id,
+        )
 
         return validation, revision

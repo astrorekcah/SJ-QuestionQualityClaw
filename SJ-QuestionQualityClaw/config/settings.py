@@ -1,7 +1,10 @@
-"""SJ-QuestionQualityClaw runtime configuration.
+"""SJ-QuestionQualityClaw configuration reference.
 
-All tunable parameters in one place. Loaded from environment variables
-with sensible defaults for local development.
+Defines all tunable parameters with their defaults. Each module reads
+from environment variables directly (via .env file), so this module
+serves as the single-source reference for what's configurable.
+
+To change a setting, edit .env — don't import DEFAULT_CONFIG.
 """
 
 from __future__ import annotations
