@@ -1,6 +1,11 @@
 """Quality baseline — the standard every assessment question is measured against.
 
-This defines what "quality" means for each question type, language, and domain.
+Each dimension has:
+  - A numeric scoring rubric (10/7/4/1) so the LLM knows exactly what each score means
+  - Pass threshold (score >= threshold = pass)
+  - Severity if failed (critical/major/minor)
+  - Concrete fail examples
+
 Used by:
   - quality_check() in reviewer.py — scores questions against these standards
   - validate_feedback() — determines if feedback identifies a real quality gap
@@ -13,41 +18,63 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 # ---------------------------------------------------------------------------
-# Quality dimensions
+# Quality dimensions with numeric scoring
 # ---------------------------------------------------------------------------
 
 class Severity(StrEnum):
-    """How serious a quality issue is."""
+    CRITICAL = "critical"
+    MAJOR = "major"
+    MINOR = "minor"
+    INFO = "info"
 
-    CRITICAL = "critical"      # Must fix — wrong answer, broken code, misleading
-    MAJOR = "major"            # Should fix — unclear stem, weak distractors
-    MINOR = "minor"            # Nice to fix — style, wording, minor ambiguity
-    INFO = "info"              # Observation — not necessarily a problem
+
+@dataclass(frozen=True)
+class ScoringLevel:
+    """A specific score level with its definition."""
+
+    score: int
+    label: str
+    description: str
 
 
 @dataclass(frozen=True)
 class QualityDimension:
-    """A single quality dimension with pass/fail criteria."""
+    """A quality dimension with a numeric scoring rubric."""
 
     name: str
     description: str
     severity_if_failed: Severity
-    pass_criteria: str
+    pass_threshold: int  # score >= this = pass
+    scoring: list[ScoringLevel]  # ordered 10 → 1
     fail_examples: list[str] = field(default_factory=list)
+
+    def scoring_rubric(self) -> str:
+        """Render the scoring rubric for LLM prompts."""
+        lines = []
+        for level in self.scoring:
+            lines.append(f"  {level.score}: {level.label} — {level.description}")
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Universal dimensions (apply to ALL question types)
+# Universal dimensions (all question types)
 # ---------------------------------------------------------------------------
 
 ANSWER_CORRECTNESS = QualityDimension(
     name="answer_correctness",
-    description="The marked correct answer must be definitively correct.",
+    description="Is the marked correct answer actually correct?",
     severity_if_failed=Severity.CRITICAL,
-    pass_criteria=(
-        "Exactly one choice is correct. The correct answer key matches "
-        "the objectively right answer. No other choice is also defensibly correct."
-    ),
+    pass_threshold=8,
+    scoring=[
+        ScoringLevel(10, "Definitively correct",
+                     "The answer is objectively right with no edge cases or debate."),
+        ScoringLevel(7, "Correct with minor gaps",
+                     "The answer is correct but minor edge cases are not addressed."),
+        ScoringLevel(4, "Debatable",
+                     "The answer is arguably correct but another choice is also defensible."),
+        ScoringLevel(1, "Wrong",
+                     "The marked answer is factually incorrect."),
+    ],
     fail_examples=[
         "Marked answer is factually wrong",
         "Two choices are both correct (ambiguous answer)",
@@ -57,78 +84,101 @@ ANSWER_CORRECTNESS = QualityDimension(
 
 SINGLE_CORRECT_ANSWER = QualityDimension(
     name="single_correct_answer",
-    description="Exactly one choice must be the correct answer — no ambiguity.",
+    description="Is there exactly one correct answer with no ambiguity?",
     severity_if_failed=Severity.CRITICAL,
-    pass_criteria=(
-        "Only one choice is correct. All other choices are clearly wrong "
-        "for specific, articulable reasons. No 'it depends' situations."
-    ),
+    pass_threshold=8,
+    scoring=[
+        ScoringLevel(10, "Unambiguous",
+                     "Exactly one choice is correct. All others are wrong for specific reasons."),
+        ScoringLevel(7, "Mostly clear",
+                     "One correct answer, but one distractor is borderline."),
+        ScoringLevel(4, "Ambiguous",
+                     "Two or more choices could be argued as correct."),
+        ScoringLevel(1, "Multiple correct",
+                     "Multiple choices are clearly valid answers."),
+    ],
     fail_examples=[
         "Choice A and C are both valid approaches",
-        "The correct answer depends on interpretation of the scenario",
-        "Multiple choices point to the same vulnerability",
+        "The correct answer depends on interpretation",
     ],
 )
 
 STEM_CLARITY = QualityDimension(
     name="stem_clarity",
-    description="The question stem must clearly state what is being asked.",
+    description="Does the question stem clearly state what is being asked?",
     severity_if_failed=Severity.MAJOR,
-    pass_criteria=(
-        "The stem contains a clear question or directive. The reader knows "
-        "exactly what they're looking for (a vulnerability, a fix, a correct "
-        "implementation). No ambiguous pronouns or vague references."
-    ),
+    pass_threshold=6,
+    scoring=[
+        ScoringLevel(10, "Crystal clear",
+                     "The question is immediately understandable. No ambiguity."),
+        ScoringLevel(7, "Clear with minor issues",
+                     "Understandable but has minor phrasing issues or unnecessary length."),
+        ScoringLevel(4, "Confusing",
+                     "The intent is discernible but the wording creates confusion."),
+        ScoringLevel(1, "Incomprehensible",
+                     "Cannot determine what the question is asking."),
+    ],
     fail_examples=[
-        "Stem says 'identify the issue' but doesn't specify what kind",
-        "Scenario is so long the actual question gets lost",
-        "Uses 'it' or 'this' without clear antecedent",
+        "Stem says 'identify the issue' without specifying what kind",
+        "Scenario so long the actual question gets lost",
     ],
 )
 
 SCENARIO_REALISM = QualityDimension(
     name="scenario_realism",
-    description="The scenario context must be plausible and relevant.",
+    description="Is the scenario context plausible and relevant?",
     severity_if_failed=Severity.MINOR,
-    pass_criteria=(
-        "The scenario describes a realistic system, role, and context. "
-        "The company/role framing helps the reader understand the stakes "
-        "without being distracting or contrived."
-    ),
-    fail_examples=[
-        "Scenario describes impossible system architecture",
-        "Role doesn't match the task (intern doing CISO work)",
-        "Company details are irrelevant padding",
+    pass_threshold=5,
+    scoring=[
+        ScoringLevel(10, "Realistic",
+                     "Scenario describes a plausible real-world system and role."),
+        ScoringLevel(7, "Mostly realistic",
+                     "Minor implausibility but doesn't distract from the question."),
+        ScoringLevel(4, "Contrived",
+                     "Scenario feels artificial or forced. Distracts from learning."),
+        ScoringLevel(1, "Impossible",
+                     "Scenario describes a system that couldn't exist."),
     ],
 )
 
 DISTRACTOR_PLAUSIBILITY = QualityDimension(
     name="distractor_plausibility",
-    description="Wrong choices must be plausible enough to test real knowledge.",
+    description="Are wrong choices plausible enough to test real knowledge?",
     severity_if_failed=Severity.MAJOR,
-    pass_criteria=(
-        "Each distractor is wrong for a specific, articulable reason but "
-        "looks plausible to someone who doesn't fully understand the concept. "
-        "Distractors test real misconceptions, not random content."
-    ),
+    pass_threshold=6,
+    scoring=[
+        ScoringLevel(10, "Excellent distractors",
+                     "All wrong choices test real misconceptions."),
+        ScoringLevel(7, "Good distractors",
+                     "Most distractors are plausible. One may be slightly weak."),
+        ScoringLevel(4, "Weak distractors",
+                     "Wrong choices are obvious or test the same misconception."),
+        ScoringLevel(1, "Trivial",
+                     "Wrong choices are absurd. No knowledge needed."),
+    ],
     fail_examples=[
-        "Wrong choice is obviously unrelated to the question",
+        "Wrong choice is obviously unrelated",
         "All distractors test the same misconception",
-        "Wrong choice is so similar to correct that it's unfair",
     ],
 )
 
 DOMAIN_ACCURACY = QualityDimension(
     name="domain_accuracy",
-    description="Technical content must be accurate for the stated domain.",
+    description="Is the technical content accurate for the stated domain?",
     severity_if_failed=Severity.CRITICAL,
-    pass_criteria=(
-        "All technical claims in the stem, code, and choices are factually "
-        "correct for the stated programming language and security domain. "
-        "Vulnerability classifications match industry standards (CWE, OWASP)."
-    ),
+    pass_threshold=8,
+    scoring=[
+        ScoringLevel(10, "Technically impeccable",
+                     "All claims, code, and classifications are factually correct."),
+        ScoringLevel(7, "Mostly accurate",
+                     "Core content is correct but has minor technical imprecision."),
+        ScoringLevel(4, "Partially inaccurate",
+                     "Contains factual errors that could mislead learners."),
+        ScoringLevel(1, "Fundamentally wrong",
+                     "Major technical errors. Teaches incorrect concepts."),
+    ],
     fail_examples=[
-        "Claims a function is vulnerable when it's actually safe",
+        "Claims a function is vulnerable when it's safe",
         "Misidentifies the CWE category",
         "Uses syntax from a different language",
     ],
@@ -141,49 +191,52 @@ DOMAIN_ACCURACY = QualityDimension(
 
 CODE_SYNTACTIC_VALIDITY = QualityDimension(
     name="code_syntactic_validity",
-    description="Code must be syntactically valid for the stated language.",
+    description="Is the code syntactically valid for the stated language?",
     severity_if_failed=Severity.MAJOR,
-    pass_criteria=(
-        "The code compiles/runs (or would, given standard libraries). "
-        "No syntax errors, missing brackets, wrong keywords. "
-        "Import statements reference real packages."
-    ),
-    fail_examples=[
-        "Missing closing bracket",
-        "Python code uses Ruby syntax",
-        "Import references nonexistent package",
+    pass_threshold=7,
+    scoring=[
+        ScoringLevel(10, "Compiles clean",
+                     "Code would compile/run without syntax errors given standard libraries."),
+        ScoringLevel(7, "Minor issues",
+                     "Compiles but has trivial issues (missing import, extra semicolon)."),
+        ScoringLevel(4, "Broken syntax",
+                     "Visible syntax errors that break compilation."),
+        ScoringLevel(1, "Wrong language",
+                     "Code uses syntax from a different language entirely."),
     ],
 )
 
 CODE_REALISM = QualityDimension(
     name="code_realism",
-    description="Code must represent realistic production patterns.",
+    description="Does the code represent realistic production patterns?",
     severity_if_failed=Severity.MINOR,
-    pass_criteria=(
-        "The code looks like something a developer would actually write. "
-        "Uses realistic variable names, follows common patterns for the "
-        "language/framework, and represents a believable system component."
-    ),
-    fail_examples=[
-        "Variable names like 'foo', 'bar', 'test123'",
-        "Security code that no real developer would write",
-        "Mixing multiple frameworks that wouldn't be used together",
+    pass_threshold=5,
+    scoring=[
+        ScoringLevel(10, "Production-like",
+                     "Looks like real code a developer would write in production."),
+        ScoringLevel(7, "Plausible",
+                     "Reasonable code but somewhat simplified for the exercise."),
+        ScoringLevel(4, "Contrived",
+                     "Code is clearly written for the exercise, not realistic."),
+        ScoringLevel(1, "Toy code",
+                     "Variables named foo/bar, unrealistic patterns, mixed frameworks."),
     ],
 )
 
 VULNERABILITY_PRESENCE = QualityDimension(
     name="vulnerability_presence",
-    description="The code must contain exactly the vulnerability being tested.",
+    description="Does the code contain exactly the vulnerability being tested?",
     severity_if_failed=Severity.CRITICAL,
-    pass_criteria=(
-        "The vulnerability described in the stem is actually present in "
-        "the code. It's in exactly the location the correct answer points to. "
-        "The vulnerability is not an artifact of simplified example code."
-    ),
-    fail_examples=[
-        "Stem says 'SQL injection' but code uses parameterized queries",
-        "Vulnerability is in a different location than the correct answer",
-        "Code is so simplified the vulnerability is artificial",
+    pass_threshold=8,
+    scoring=[
+        ScoringLevel(10, "Clear vulnerability",
+                     "The vulnerability is present exactly where the answer points. Unambiguous."),
+        ScoringLevel(7, "Present but subtle",
+                     "Vulnerability exists but requires careful analysis to confirm location."),
+        ScoringLevel(4, "Mislocated",
+                     "A vulnerability exists but not at the location the answer indicates."),
+        ScoringLevel(1, "Absent",
+                     "The described vulnerability does not exist in the code."),
     ],
 )
 
@@ -194,51 +247,57 @@ VULNERABILITY_PRESENCE = QualityDimension(
 
 CHOICE_LINE_ACCURACY = QualityDimension(
     name="choice_line_accuracy",
-    description="For mc-block/mc-line: choice line references must be correct.",
+    description="Do choice line references point to the correct code?",
     severity_if_failed=Severity.CRITICAL,
-    pass_criteria=(
-        "Line numbers in choices point to actual code lines within bounds. "
-        "For mc-block: start <= end, range contains meaningful code. "
-        "For mc-line: line contains the relevant code (not empty/whitespace). "
-        "The correct answer points to the actual vulnerable code."
-    ),
+    pass_threshold=9,
+    scoring=[
+        ScoringLevel(10, "Exact references",
+                     "All line numbers are correct. Ranges contain the relevant code."),
+        ScoringLevel(7, "Mostly correct",
+                     "References are correct but one range is slightly too wide/narrow."),
+        ScoringLevel(4, "Off by significant amount",
+                     "Some references point to wrong code sections."),
+        ScoringLevel(1, "Out of bounds",
+                     "Line numbers are out of range or point to empty/unrelated lines."),
+    ],
     fail_examples=[
         "Line number out of bounds",
-        "Correct answer points to empty line or comment",
-        "Block range includes unrelated code",
-        "Line references shifted after code edit but not updated",
+        "Correct answer points to empty line",
+        "Line references shifted after code edit",
     ],
 )
 
 CODE_CHOICE_QUALITY = QualityDimension(
     name="code_choice_quality",
-    description="For mc-code: inline code snippets must be syntactically valid.",
+    description="Are inline code choice snippets valid and plausible?",
     severity_if_failed=Severity.MAJOR,
-    pass_criteria=(
-        "Each code choice snippet is syntactically valid, fits the insertion "
-        "point (codeLine), and represents a plausible implementation. "
-        "The correct choice fixes/demonstrates the security concept."
-    ),
-    fail_examples=[
-        "Code snippet won't compile at the insertion point",
-        "Indentation is wrong for the surrounding context",
-        "Snippet uses variables not in scope",
+    pass_threshold=6,
+    scoring=[
+        ScoringLevel(10, "All snippets valid",
+                     "Every snippet compiles at the insertion point."),
+        ScoringLevel(7, "Mostly valid",
+                     "Snippets work but one has minor issues (indentation, scope)."),
+        ScoringLevel(4, "Broken snippets",
+                     "Some snippets won't compile at the insertion point."),
+        ScoringLevel(1, "Non-functional",
+                     "Snippets are syntactically broken or use wrong variables."),
     ],
 )
 
 GENERIC_CHOICE_QUALITY = QualityDimension(
     name="generic_choice_quality",
-    description="For mc-generic: text choices must be distinct and substantive.",
+    description="Are text choices distinct, substantive, and similarly formatted?",
     severity_if_failed=Severity.MAJOR,
-    pass_criteria=(
-        "Each text choice makes a clear, distinct claim. Choices are "
-        "similar enough in length/style that format doesn't reveal the answer. "
-        "Wrong choices represent real misconceptions about the topic."
-    ),
-    fail_examples=[
-        "Correct answer is much longer/more detailed than distractors",
-        "Choices use 'always/never' language that makes them obviously wrong",
-        "Two choices say essentially the same thing",
+    pass_threshold=6,
+    scoring=[
+        ScoringLevel(10, "Excellent text choices",
+                     "Distinct claims, similar length/style."),
+        ScoringLevel(7, "Good choices",
+                     "Distinct and substantive but format slightly reveals the answer."),
+        ScoringLevel(4, "Weak choices",
+                     "Obvious differences in length/detail between correct and wrong."),
+        ScoringLevel(1, "Trivial choices",
+                     "Choices say the same thing or use obvious language."),
     ],
 )
 
@@ -262,18 +321,19 @@ class QualityBaseline:
         return [d for d in self.dimensions if d.severity_if_failed == Severity.MAJOR]
 
     def to_prompt_section(self) -> str:
-        """Render as text for LLM system prompts."""
+        """Render the full baseline with scoring rubrics for LLM prompts."""
         lines = ["## Quality Baseline\n"]
+        lines.append("Score each dimension 1-10 using the rubric below.\n")
         for d in self.dimensions:
             lines.append(
-                f"### {d.name} [{d.severity_if_failed.upper()}]"
+                f"### {d.name} [{d.severity_if_failed.upper()}] "
+                f"(pass ≥ {d.pass_threshold})"
             )
             lines.append(d.description)
-            lines.append(f"**Pass criteria**: {d.pass_criteria}")
+            lines.append("**Scoring rubric**:")
+            lines.append(d.scoring_rubric())
             if d.fail_examples:
-                lines.append("**Fail examples**:")
-                for ex in d.fail_examples:
-                    lines.append(f"  - {ex}")
+                lines.append("**Fail examples**: " + "; ".join(d.fail_examples))
             lines.append("")
         return "\n".join(lines)
 
@@ -281,8 +341,13 @@ class QualityBaseline:
     def dimension_names(self) -> list[str]:
         return [d.name for d in self.dimensions]
 
+    @property
+    def total_weight(self) -> float:
+        """Sum of pass thresholds — higher = stricter baseline."""
+        return sum(d.pass_threshold for d in self.dimensions)
 
-# Universal dimensions for all types
+
+# Universal
 _UNIVERSAL = [
     ANSWER_CORRECTNESS,
     SINGLE_CORRECT_ANSWER,
@@ -292,7 +357,7 @@ _UNIVERSAL = [
     DOMAIN_ACCURACY,
 ]
 
-# Code-specific (shared by mc-block, mc-code, mc-line)
+# Code-specific
 _CODE_COMMON = [
     CODE_SYNTACTIC_VALIDITY,
     CODE_REALISM,
@@ -316,7 +381,6 @@ BASELINE_MC_GENERIC = QualityBaseline(
     dimensions=_UNIVERSAL + [GENERIC_CHOICE_QUALITY],
 )
 
-# Lookup by typeId
 BASELINES: dict[str, QualityBaseline] = {
     "mc-block": BASELINE_MC_BLOCK,
     "mc-line": BASELINE_MC_LINE,

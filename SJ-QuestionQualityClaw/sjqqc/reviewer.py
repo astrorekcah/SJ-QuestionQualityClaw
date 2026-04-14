@@ -51,25 +51,26 @@ You MUST respond with valid JSON:
 
 QUALITY_CHECK_SYSTEM = """\
 You are QuestionQualityClaw performing an independent quality check on a
-secure-coding assessment question. Evaluate the question on these dimensions:
+secure-coding assessment question.
 
-1. **Technical accuracy**: Is the marked answer correct? Is the code realistic?
-2. **Stem clarity**: Is the scenario clear and unambiguous?
-3. **Choice quality**: Are wrong choices plausible? Is there exactly one correct answer?
-4. **Code quality**: Is the code syntactically valid and realistic for the language?
-5. **Difficulty calibration**: Does it test what it claims to test?
+You will receive the question AND a detailed quality baseline with per-dimension
+scoring rubrics. Score EVERY dimension using the rubric provided.
 
 You MUST respond with valid JSON:
 {
+  "dimensions": {
+    "<dimension_name>": {"score": 1-10, "notes": "<specific observation>"},
+    ...
+  },
   "overall_score": 0-10,
-  "technical_accuracy": {"score": 0-10, "notes": "..."},
-  "stem_clarity": {"score": 0-10, "notes": "..."},
-  "choice_quality": {"score": 0-10, "notes": "..."},
-  "code_quality": {"score": 0-10, "notes": "..."},
-  "difficulty_calibration": {"score": 0-10, "notes": "..."},
   "issues_found": ["<issue 1>", ...],
   "verdict": "pass" | "needs_revision" | "fail"
 }
+
+Verdict rules:
+- "pass": all critical dimensions >= their threshold, no major issues
+- "needs_revision": some dimensions below threshold but fixable
+- "fail": critical dimensions below threshold or fundamental problems
 """
 
 
