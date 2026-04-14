@@ -35,5 +35,11 @@ ruff check sjqqc/ tests/ config/
 ## Platform JSON Format
 Three question types: mc-block (start/end), mc-code (code arrays), mc-line (line numbers). Round-trip validated via tools.validate_roundtrip().
 
+## Documentation
+- `docs/FEEDBACK_LOOP.md` — complete workflow: input → validate → classify → fix → export
+- `README.md` — setup, architecture, module guide
+- `ironclaw/workspace/IDENTITY.md` — agent identity + system architecture
+- `ironclaw/skills/` — 10 skill playbooks
+
 ## Testing
-80 tests in tests/unit/: models (40), tools (22), changelog (9), pipeline (9). All use real question files. Pipeline tests mock LLM responses.
+70 tests in tests/unit/ using bundled fixtures (tests/fixtures/). Pipeline tests mock LLM responses. No external dependencies needed.
