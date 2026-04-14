@@ -263,6 +263,7 @@ def main() -> None:
         console.print("  quality <file>                   LLM quality check")
         console.print("  export  <file>                   Export platform JSON")
         console.print('  batch-process "feedback"         Process all questions')
+        console.print("  telegram                         Start Telegram bot")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -289,6 +290,10 @@ def main() -> None:
             console.print('[red]Usage: batch-process "feedback"[/red]')
             sys.exit(1)
         asyncio.run(cmd_batch_process(" ".join(sys.argv[2:])))
+    elif cmd == "telegram":
+        from sjqqc.telegram_bridge import main as telegram_main
+
+        asyncio.run(telegram_main())
     else:
         console.print(f"[red]Unknown command: {cmd}[/red]")
         sys.exit(1)
