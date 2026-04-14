@@ -14,7 +14,6 @@ FIXTURE_FILES = {
     "mc-block": FIXTURES_DIR / "ruby_mc_block.json",
     "mc-code": FIXTURES_DIR / "ruby_mc_code.json",
     "mc-line": FIXTURES_DIR / "rust_mc_line.json",
-    "mc-block-rust": FIXTURES_DIR / "rust_mc_block.json",
     "mc-generic": FIXTURES_DIR / "ai_mc_generic.json",
 }
 
